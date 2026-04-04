@@ -30,12 +30,11 @@ Master tracking for the LLM abstraction, auth, and deployment work.
 - [x] 14. Test locally — Ollama still works, Azure works via `.env`
 - [x] 15. Verify a game works end-to-end on Azure — confirmed, NSFW blocked by Azure filters
 
-## Phase 3 — Game Rating + Content Filtering
+## Phase 3 — Game Rating + Content Filtering — SKIPPED
 
-- [ ] 16. Add `"rating"` field to game JSONs
-- [ ] 17. Add `CONTENT_RATING` env var to `config.py`
-- [ ] 18. Add filtering to `/api/games` endpoint
-- [ ] 19. Test both modes locally (`all` vs `sfw`)
+> Not needed. SFW/NSFW is handled at the deployment level: only copy SFW game
+> files to the hosted server. Azure's built-in content filters provide an
+> additional safety net. No code changes required.
 
 ## Phase 4 — Auth + Database (DONE by Cursor, needs testing)
 
