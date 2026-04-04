@@ -1,3 +1,7 @@
+from dotenv import load_dotenv
+
+load_dotenv()
+
 import os
 from pathlib import Path
 
@@ -24,6 +28,12 @@ FEEDBACK_DIR = Path(get_env("FEEDBACK_DIR", str(LOGS_DIR / "feedback")))
 OLLAMA_HOST = get_env("OLLAMA_HOST", "http://localhost:11434")
 DEFAULT_MODEL = get_env("DEFAULT_MODEL", "nchapman/mn-12b-mag-mell-r1:latest")
 LLM_PROVIDER = get_env("LLM_PROVIDER", "ollama")
+
+# Azure (used when LLM_PROVIDER=azure)
+AZURE_ENDPOINT = get_env("AZURE_ENDPOINT", "")
+AZURE_API_KEY = get_env("AZURE_API_KEY", "")
+AZURE_DEPLOYMENT = get_env("AZURE_DEPLOYMENT", "gpt-4o-mini")
+AZURE_API_VERSION = get_env("AZURE_API_VERSION", "2024-12-01-preview")
 
 FLASK_HOST = get_env("FLASK_HOST", "0.0.0.0")
 FLASK_PORT = int(get_env("FLASK_PORT", "5051"))

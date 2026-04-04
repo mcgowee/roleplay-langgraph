@@ -2,8 +2,10 @@
 flask
 bcrypt
 requests
+python-dotenv
 langchain
 langchain_community
+langchain_openai
 langgraph
 
 # Optional: story_to_game_draft.py only needs flask/langgraph for the main app;
