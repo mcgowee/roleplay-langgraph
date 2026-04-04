@@ -6,7 +6,7 @@ Master tracking for the LLM abstraction, auth, and deployment work.
 
 - [x] 1. Create `llm/` module with base protocol + Ollama provider
 - [x] 2. Update `app.py` to use new `llm/` module
-- [ ] 3. Test locally — everything works exactly as before
+- [x] 3. Test locally — everything works exactly as before
 
 > **Note:** Cursor jumped ahead and built Phase 4 (auth + database + adventures)
 > in the same pass as Phase 1. The `llm/` module is correct. The app.py rewrite
@@ -14,9 +14,9 @@ Master tracking for the LLM abstraction, auth, and deployment work.
 
 ## Phase 1.5 — Fix Forward (stabilize Cursor's big-bang rewrite)
 
-- [ ] 4. Install `bcrypt` in venv (`pip install bcrypt`)
-- [ ] 5. Verify Flask server starts without errors
-- [ ] 6. Test web UI: register, login, create adventure, play a few turns
+- [x] 4. Install `bcrypt` in venv (`pip install bcrypt`)
+- [x] 5. Verify Flask server starts without errors
+- [x] 6. Test web UI: register, login, create adventure, play a few turns
 - [ ] 7. Fix `play.py` CLI client to work with new auth + adventure API (or add legacy bypass)
 - [ ] 8. Remove dead file `src/lib/playBootstrap.ts`
 - [ ] 9. Fix `proxyFlaskText` double Set-Cookie relay in `flask.ts`
@@ -44,7 +44,7 @@ Master tracking for the LLM abstraction, auth, and deployment work.
 - [x] 22. Refactor `app.py` endpoints to use adventures
 - [x] 23. Frontend login page + adventure picker
 - [x] 24. Update play page to use `adventure_id`
-- [ ] 25. Full end-to-end test of auth flow
+- [x] 25. Full end-to-end test of auth flow
 
 ## Phase 5 — Hostinger Deployment
 

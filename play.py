@@ -1,10 +1,13 @@
 import requests
 import os
 import sys
+from getpass import getpass
 
-from config import FLASK_HOST, FLASK_PORT, GAMES_DIR, SAVE_SLOTS
+from config import FLASK_HOST, FLASK_PORT, SAVE_SLOTS, HISTORY_LIMIT
 
 API = f"http://{FLASK_HOST}:{FLASK_PORT}"
+
+session = requests.Session()
 
 # Optional first word after /note or /feedback (not "general")
 _NOTE_CATEGORIES = frozenset(
@@ -20,13 +23,88 @@ def print_divider():
     print("\n" + "─" * 60 + "\n")
 
 
+def login_or_register():
+    print("Log in or register to play.\n")
+    while True:
+        try:
+            uid = input("  Username: ").strip()
+            password = getpass("  Password: ")
+            lr = input("  (L)ogin or (R)egister? ").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            print("\nGoodbye.")
+            sys.exit(0)
+
+        if lr in ("r", "register"):
+            try:
+                res = session.post(f"{API}/register", json={"uid": uid, "password": password})
+            except requests.exceptions.ConnectionError:
+                print("\nError: Could not connect to game server.")
+                print(f"Make sure the server is running at {API}\n")
+                continue
+            if res.status_code == 201:
+                try:
+                    data = res.json()
+                except ValueError:
+                    print("\n\033[91mInvalid response from server.\033[0m\n")
+                    continue
+                print(f"\n\033[92mWelcome, {data.get('uid', uid)}!\033[0m\n")
+                return
+            if res.status_code == 409:
+                try:
+                    err = res.json().get("error", "Username already taken")
+                except ValueError:
+                    err = "Username already taken"
+                print(f"\n\033[91m{err}\033[0m\n")
+                continue
+            try:
+                err = res.json().get("error", res.text[:120])
+            except ValueError:
+                err = res.text[:120]
+            print(f"\n\033[91m{err}\033[0m\n")
+            continue
+
+        if lr in ("l", "login", ""):
+            try:
+                res = session.post(f"{API}/login", json={"uid": uid, "password": password})
+            except requests.exceptions.ConnectionError:
+                print("\nError: Could not connect to game server.")
+                print(f"Make sure the server is running at {API}\n")
+                continue
+            if res.status_code == 200:
+                try:
+                    data = res.json()
+                except ValueError:
+                    print("\n\033[91mInvalid response from server.\033[0m\n")
+                    continue
+                print(f"\n\033[92mWelcome back, {data.get('uid', uid)}!\033[0m\n")
+                return
+            if res.status_code == 401:
+                try:
+                    err = res.json().get("error", "Invalid uid or password")
+                except ValueError:
+                    err = "Invalid uid or password"
+                print(f"\n\033[91m{err}\033[0m\n")
+                continue
+            try:
+                err = res.json().get("error", res.text[:120])
+            except ValueError:
+                err = res.text[:120]
+            print(f"\n\033[91m{err}\033[0m\n")
+            continue
+
+        print("Type L for login or R for register.")
+
+
 def pick_game():
     try:
-        res = requests.get(f"{API}/games")
+        res = session.get(f"{API}/games")
         games = res.json().get("games", [])
     except requests.exceptions.ConnectionError:
         print("Error: Could not connect to game server.")
         print(f"Make sure the server is running at {API}")
+        sys.exit(1)
+    except ValueError:
+        print("Error: Invalid response from game server.")
         sys.exit(1)
 
     if not games:
@@ -56,47 +134,122 @@ def pick_game():
             sys.exit(0)
 
 
-def start_game(game_name):
+def _create_new_adventure(game_file):
     try:
-        res = requests.post(f"{API}/start", json={"game": game_name})
+        res = session.post(f"{API}/adventures", json={"game_file": game_file})
         data = res.json()
     except requests.exceptions.ConnectionError:
         print("\nError: Could not connect to game server.")
         sys.exit(1)
+    except ValueError:
+        print("\nError: Invalid response from game server.")
+        sys.exit(1)
 
-    if data.get("resumed"):
-        print(f"\n\033[93mSaved game found — {data['turns']} turns played.\033[0m")
-        choice = input("Resume? (y/n): ").strip().lower()
-        if choice != "n":
-            return data["session_id"], data["response"], data.get("slot", 0)
-        res = requests.post(f"{API}/start", json={"game": game_name, "fresh": True})
-        data = res.json()
+    if res.status_code != 200:
+        print(f"\n\033[91m{data.get('error', 'Could not start adventure')}\033[0m")
+        sys.exit(1)
 
-    return data["session_id"], data["response"], data.get("slot", 0)
+    adventure = data.get("adventure") or {}
+    aid = adventure.get("id")
+    opening = data.get("response", "")
+    slot = int(adventure.get("active_slot", 0))
+    return aid, opening, slot
 
 
-def send_message(session_id, message, slot=0):
+def start_game(game_file):
     try:
-        res = requests.post(
+        res = session.get(f"{API}/adventures")
+        data = res.json()
+    except requests.exceptions.ConnectionError:
+        print("\nError: Could not connect to game server.")
+        sys.exit(1)
+    except ValueError:
+        print("\nError: Invalid response from game server.")
+        sys.exit(1)
+
+    if res.status_code != 200:
+        print(f"\n\033[91m{data.get('error', 'Could not list adventures')}\033[0m")
+        sys.exit(1)
+
+    adventures = [
+        a for a in data.get("adventures", []) if a.get("game_file") == game_file
+    ]
+
+    if not adventures:
+        return _create_new_adventure(game_file)
+
+    print("\nYou have existing adventures for this game:\n")
+    for i, a in enumerate(adventures, 1):
+        lp = a.get("last_played") or ""
+        if lp:
+            lp = lp[:19].replace("T", " ")
+        print(f"  {i}. {a['name']} (last played: {lp})")
+
+    while True:
+        try:
+            choice = input(
+                "\nContinue adventure (number) or start (N)ew? "
+            ).strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            print("\nGoodbye.")
+            sys.exit(0)
+
+        if choice in ("n", "new"):
+            return _create_new_adventure(game_file)
+
+        try:
+            idx = int(choice) - 1
+        except ValueError:
+            print("Invalid choice. Enter a number or N for new.")
+            continue
+
+        if not (0 <= idx < len(adventures)):
+            print("Invalid choice. Try again.")
+            continue
+
+        adventure_id = adventures[idx]["id"]
+        st = get_status(adventure_id)
+        if st.get("error"):
+            print(f"\n\033[91mError: {st['error']}\033[0m")
+            continue
+
+        hist = st.get("history") or []
+        if not hist:
+            opening = st.get("empty_history_opening", "")
+        else:
+            opening = "\n\n".join(hist[-HISTORY_LIMIT:])
+
+        adv_meta = st.get("adventure") or {}
+        slot = int(adv_meta.get("active_slot", 0))
+        return adventure_id, opening, slot
+
+
+def send_message(adventure_id, message):
+    try:
+        res = session.post(
             f"{API}/chat",
-            json={"session_id": session_id, "message": message, "slot": slot},
+            json={"adventure_id": adventure_id, "message": message},
         )
         return res.json()
     except requests.exceptions.ConnectionError:
         return {"error": "Could not connect to server"}
+    except ValueError:
+        return {"error": "Invalid response from server"}
 
 
-def get_status(session_id, slot=0):
+def get_status(adventure_id):
     try:
-        res = requests.get(f"{API}/status", params={"session_id": session_id})
+        res = session.get(f"{API}/status", params={"adventure_id": adventure_id})
         return res.json()
     except requests.exceptions.ConnectionError:
         return {}
+    except ValueError:
+        return {"error": "Invalid response from server"}
 
 
-def submit_feedback(session_id, slot, game_file, game_title, category, text, last_response=None):
+def submit_feedback(adventure_id, slot, game_file, game_title, category, text, last_response=None):
     payload = {
-        "session_id": session_id,
+        "adventure_id": adventure_id,
         "slot": slot,
         "game_file": game_file,
         "game_title": game_title,
@@ -106,12 +259,15 @@ def submit_feedback(session_id, slot, game_file, game_title, category, text, las
     if last_response:
         payload["last_response_snippet"] = last_response[:3000]
     try:
-        res = requests.post(f"{API}/feedback", json=payload)
+        res = session.post(f"{API}/feedback", json=payload)
         if res.status_code == 200:
             path = res.json().get("path", "logs/feedback/")
             print(f"\n\033[92mFeedback saved ({path})\033[0m")
         else:
-            err = res.json().get("error", res.text[:120])
+            try:
+                err = res.json().get("error", res.text[:120])
+            except ValueError:
+                err = res.text[:120]
             print(f"\n\033[91mFeedback failed: {err}\033[0m")
     except requests.exceptions.ConnectionError:
         print("\n\033[91mCould not connect to server\033[0m")
@@ -182,25 +338,27 @@ def display_status(status):
     )
 
 
-def save_game(session_id, slot):
+def save_game(adventure_id, slot):
     try:
-        res = requests.post(
-            f"{API}/save", json={"session_id": session_id, "slot": slot}
+        res = session.post(
+            f"{API}/save", json={"adventure_id": adventure_id, "slot": slot}
         )
         if res.status_code == 200:
             print(f"\n\033[92mGame saved to slot {slot}\033[0m")
         else:
-            print(
-                f"\n\033[91mFailed to save: {res.json().get('error', 'Unknown error')}\033[0m"
-            )
+            try:
+                err = res.json().get("error", "Unknown error")
+            except ValueError:
+                err = "Unknown error"
+            print(f"\n\033[91mFailed to save: {err}\033[0m")
     except requests.exceptions.ConnectionError:
         print("\n\033[91mCould not connect to server\033[0m")
 
 
-def list_slots(session_id):
+def list_slots(adventure_id):
     res = None
     try:
-        res = requests.get(f"{API}/list_slots", params={"session_id": session_id})
+        res = session.get(f"{API}/list_slots", params={"adventure_id": adventure_id})
         if res.status_code != 200:
             print(f"\n\033[91mAPI Error: {res.status_code} - {res.text[:100]}\033[0m")
             return
@@ -223,23 +381,26 @@ def list_slots(session_id):
             print("\n\033[91mInvalid response from server\033[0m")
 
 
-def delete_slot(session_id, slot):
+def delete_slot(adventure_id, slot):
     try:
-        res = requests.delete(
-            f"{API}/delete_save", json={"session_id": session_id, "slot": slot}
+        res = session.delete(
+            f"{API}/delete_save", json={"adventure_id": adventure_id, "slot": slot}
         )
         if res.status_code == 200:
             print(f"\n\033[92mDeleted slot {slot}\033[0m")
         else:
-            print(
-                f"\n\033[91mFailed to delete: {res.json().get('error', 'Unknown error')}\033[0m"
-            )
+            try:
+                err = res.json().get("error", "Unknown error")
+            except ValueError:
+                err = "Unknown error"
+            print(f"\n\033[91mFailed to delete: {err}\033[0m")
     except requests.exceptions.ConnectionError:
         print("\n\033[91mCould not connect to server\033[0m")
 
 
 def main():
     clear()
+    login_or_register()
     game_file, game_title = pick_game()
 
     print(f"\n  \033[93m{game_title.upper()}\033[0m\n")
@@ -256,7 +417,7 @@ def main():
     print("    quit         - Exit the game")
     print()
 
-    session_id, opening, slot = start_game(game_file)
+    adventure_id, opening, slot = start_game(game_file)
     last_story_text = opening
     display_response(opening, {})
 
@@ -283,7 +444,7 @@ def main():
                 print("\nGame ended.")
                 break
             elif slash_cmd == "status":
-                status = get_status(session_id, slot)
+                status = get_status(adventure_id)
                 display_status(status)
                 continue
             elif slash_cmd == "help":
@@ -293,7 +454,7 @@ def main():
                 try:
                     save_slot = int(cmd_parts[1])
                     if 0 <= save_slot < SAVE_SLOTS:
-                        save_game(session_id, save_slot)
+                        save_game(adventure_id, save_slot)
                     else:
                         print(
                             f"\n\033[91mInvalid slot. Must be 0-{SAVE_SLOTS - 1}\033[0m"
@@ -305,20 +466,26 @@ def main():
                 try:
                     load_slot = int(cmd_parts[1])
                     if 0 <= load_slot < SAVE_SLOTS:
-                        res = requests.post(
+                        res = session.post(
                             f"{API}/resume",
-                            json={"session_id": session_id, "slot": load_slot},
+                            json={"adventure_id": adventure_id, "slot": load_slot},
                         )
                         if res.status_code == 200:
                             slot = load_slot
-                            data = res.json()
+                            try:
+                                data = res.json()
+                            except ValueError:
+                                print("\n\033[91mInvalid response from server\033[0m")
+                                continue
                             print(
                                 f"\n\033[92mLoaded slot {load_slot} - Turn {data['turns']}\033[0m"
                             )
                         else:
-                            print(
-                                f"\n\033[91m{res.json().get('error', 'Failed to load')}\033[0m"
-                            )
+                            try:
+                                err = res.json().get("error", "Failed to load")
+                            except ValueError:
+                                err = "Failed to load"
+                            print(f"\n\033[91m{err}\033[0m")
                     else:
                         print(
                             f"\n\033[91mInvalid slot. Must be 0-{SAVE_SLOTS - 1}\033[0m"
@@ -327,13 +494,13 @@ def main():
                     print("\n\033[91mUsage: /load {slot_number}\033[0m")
                 continue
             elif slash_cmd == "list":
-                list_slots(session_id)
+                list_slots(adventure_id)
                 continue
             elif slash_cmd == "del" and len(cmd_parts) == 2:
                 try:
                     del_slot = int(cmd_parts[1])
                     if 0 <= del_slot < SAVE_SLOTS:
-                        delete_slot(session_id, del_slot)
+                        delete_slot(adventure_id, del_slot)
                     else:
                         print(
                             f"\n\033[91mInvalid slot. Must be 0-{SAVE_SLOTS - 1}\033[0m"
@@ -343,27 +510,33 @@ def main():
                 continue
             elif slash_cmd == "pause":
                 try:
-                    res = requests.post(f"{API}/pause", json={"session_id": session_id})
+                    res = session.post(
+                        f"{API}/pause", json={"adventure_id": adventure_id}
+                    )
                     if res.status_code == 200:
                         print(f"\n\033[93mGame paused\033[0m")
                     else:
-                        print(
-                            f"\n\033[91m{res.json().get('error', 'Failed to pause')}\033[0m"
-                        )
+                        try:
+                            err = res.json().get("error", "Failed to pause")
+                        except ValueError:
+                            err = "Failed to pause"
+                        print(f"\n\033[91m{err}\033[0m")
                 except requests.exceptions.ConnectionError:
                     print("\n\033[91mCould not connect to server\033[0m")
                 continue
             elif slash_cmd == "unpause":
                 try:
-                    res = requests.post(
-                        f"{API}/unpause", json={"session_id": session_id}
+                    res = session.post(
+                        f"{API}/unpause", json={"adventure_id": adventure_id}
                     )
                     if res.status_code == 200:
                         print(f"\n\033[92mGame resumed\033[0m")
                     else:
-                        print(
-                            f"\n\033[91m{res.json().get('error', 'Failed to resume')}\033[0m"
-                        )
+                        try:
+                            err = res.json().get("error", "Failed to resume")
+                        except ValueError:
+                            err = "Failed to resume"
+                        print(f"\n\033[91m{err}\033[0m")
                 except requests.exceptions.ConnectionError:
                     print("\n\033[91mCould not connect to server\033[0m")
                 continue
@@ -388,7 +561,7 @@ def main():
                     print("\n\033[91mNote text is empty.\033[0m")
                     continue
                 submit_feedback(
-                    session_id,
+                    adventure_id,
                     slot,
                     game_file,
                     game_title,
@@ -404,7 +577,7 @@ def main():
                 continue
 
         # Send regular message
-        data = send_message(session_id, action, slot)
+        data = send_message(adventure_id, action)
         if "error" in data:
             print(f"\n\033[91mError: {data['error']}\033[0m")
             continue

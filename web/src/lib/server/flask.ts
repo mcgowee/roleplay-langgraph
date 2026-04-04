@@ -67,11 +67,7 @@ export async function proxyFlaskText(
 ): Promise<Response> {
   const upstream = await proxyFlask(request, path, init);
   const text = await upstream.text();
-  const out = new Headers();
-  const ct = upstream.headers.get("content-type");
-  if (ct) {
-    out.set("Content-Type", ct);
-  }
-  relaySetCookies(upstream, out);
+  // Carry over all headers (including Set-Cookie) from the already-built response
+  const out = new Headers(upstream.headers);
   return new Response(text, { status: upstream.status, headers: out });
 }
