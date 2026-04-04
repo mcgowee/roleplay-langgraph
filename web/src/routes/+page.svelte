@@ -2,7 +2,13 @@
   import { onMount } from "svelte";
   import { goto } from "$app/navigation";
 
-  type Game = { file: string; title: string; opening?: string };
+  type Game = {
+    file: string;
+    title: string;
+    opening?: string;
+    description?: string;
+    genre?: string;
+  };
 
   type Adventure = {
     id: number;
@@ -17,8 +23,6 @@
   let loadError = $state<string | null>(null);
   let advError = $state<string | null>(null);
   let busy = $state(false);
-  let newName = $state("");
-  let pickedGame = $state<string>("");
 
   function formatRelative(iso: string | null): string {
     if (!iso) return "—";
@@ -35,6 +39,21 @@
     return rtf.format(-diffDay, "day");
   }
 
+  function genrePillClass(genre: string | undefined): string {
+    const g = (genre ?? "").trim().toLowerCase();
+    const allowed = new Set([
+      "mystery",
+      "thriller",
+      "drama",
+      "comedy",
+      "sci-fi",
+      "horror",
+      "fantasy",
+    ]);
+    if (!allowed.has(g)) return "genre-pill genre-unknown";
+    return `genre-pill genre-${g.replace(/\s+/g, "-")}`;
+  }
+
   async function loadGames() {
     loadError = null;
     try {
@@ -46,7 +65,6 @@
         return;
       }
       games = (data as { games?: Game[] }).games ?? [];
-      if (games.length && !pickedGame) pickedGame = games[0].file;
     } catch {
       loadError = "Could not reach the server.";
     }
@@ -105,25 +123,15 @@
     }
   }
 
-  async function startAdventure() {
-    if (!pickedGame) {
-      advError = "Pick a game.";
-      return;
-    }
+  async function startAdventureWithGame(gameFile: string) {
     busy = true;
     advError = null;
     try {
-      const body: { game_file: string; name?: string } = {
-        game_file: pickedGame,
-      };
-      const n = newName.trim();
-      if (n) body.name = n;
-
       const r = await fetch("/api/adventures", {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ game_file: gameFile }),
       });
       const data = await r.json();
       if (!r.ok) {
@@ -137,7 +145,6 @@
         return;
       }
       await loadAdventures();
-      newName = "";
       goPlay(id);
     } catch {
       advError = "Start request failed";
@@ -153,10 +160,12 @@
 
 <main class="wrap">
   <header class="head">
-    <h1>Your Adventures</h1>
+    <h1>Lobby</h1>
     <p class="sub">
-      Continue a saved run or start a new one. Slot management is on the
-      <a href="/play">Play</a> page. <a href="/tools">Tools</a> stay available without signing in.
+      Resume saved runs, browse the story catalog, or open the tools to draft or
+      validate JSON. Slot management lives on the
+      <a href="/play">Play</a> page. <a href="/tools">Tools</a> are available
+      without signing in.
     </p>
   </header>
 
@@ -164,24 +173,27 @@
     <p class="err">{advError}</p>
   {/if}
 
-  <section class="panel">
-    <div class="panel-head">
-      <h2>Adventures</h2>
-      <button type="button" class="btn sm ghost" onclick={() => loadAdventures()}>
-        Refresh
-      </button>
-    </div>
+  {#if adventures.length > 0}
+    <section class="panel section-adventures">
+      <div class="panel-head">
+        <h2>Your Adventures</h2>
+        <button
+          type="button"
+          class="btn sm ghost"
+          onclick={() => loadAdventures()}
+        >
+          Refresh
+        </button>
+      </div>
 
-    {#if adventures.length === 0}
-      <p class="muted">No adventures yet. Start one below.</p>
-    {:else}
       <ul class="adv-list">
         {#each adventures as a (a.id)}
           <li class="adv">
             <div class="meta">
-              <strong>{a.name}</strong>
+              <strong class="adv-name">{a.name}</strong>
               <span class="file">{a.game_file}.json</span>
-              <span class="when">Last played {formatRelative(a.last_played)}</span>
+              <span class="when"
+                >Last played {formatRelative(a.last_played)}</span>
             </div>
             <div class="adv-actions">
               <button
@@ -204,55 +216,69 @@
           </li>
         {/each}
       </ul>
-    {/if}
-  </section>
+    </section>
+  {/if}
 
-  <section class="panel">
-    <h2>Start new adventure</h2>
+  <section class="panel section-catalog">
+    <h2 class="section-title">Story Catalog</h2>
     {#if loadError}
       <p class="err">{loadError}</p>
       <button type="button" class="btn" onclick={loadGames}>Retry</button>
     {:else if games.length === 0 && !loadError}
       <p class="muted">Loading games…</p>
     {:else}
-      <label class="field">
-        Game
-        <select class="select" bind:value={pickedGame}>
-          {#each games as g (g.file)}
-            <option value={g.file}>{g.title} ({g.file}.json)</option>
-          {/each}
-        </select>
-      </label>
-      <label class="field">
-        Adventure name (optional)
-        <input
-          type="text"
-          class="inp"
-          placeholder="Defaults to game title"
-          bind:value={newName}
-        />
-      </label>
-      <button
-        type="button"
-        class="btn primary"
-        disabled={busy || !pickedGame}
-        onclick={startAdventure}
-      >
-        {busy ? "Starting…" : "Start"}
-      </button>
+      <div class="catalog-grid">
+        {#each games as g (g.file)}
+          <article class="story-card">
+            <span class={genrePillClass(g.genre)}>
+              {(g.genre ?? "").trim().replace(/-/g, " ") || "story"}
+            </span>
+            <h3 class="card-title">{g.title}</h3>
+            <p class="card-desc">
+              {g.description?.trim() ||
+                "No description yet — dive in and see what happens."}
+            </p>
+            <button
+              type="button"
+              class="btn primary card-play"
+              disabled={busy}
+              onclick={() => startAdventureWithGame(g.file)}
+            >
+              {busy ? "Starting…" : "Play"}
+            </button>
+          </article>
+        {/each}
+      </div>
     {/if}
+  </section>
+
+  <section class="panel section-create">
+    <h2 class="section-title">Create Your Own Story</h2>
+    <p class="create-blurb">
+      Build a custom game from a story outline or paste your own game JSON.
+    </p>
+    <div class="create-actions">
+      <a href="/tools/story-draft" class="btn primary link-btn"
+        >Story Draft Tool</a
+      >
+      <a href="/tools/validate" class="btn link-btn">Validate Game JSON</a>
+    </div>
   </section>
 </main>
 
 <style>
   .wrap {
-    max-width: 42rem;
+    max-width: 54rem;
     margin: 0 auto;
     padding: 1.25rem 1rem 3rem;
+    background: #0f1114;
+    min-height: calc(100vh - 42px);
+    box-sizing: border-box;
   }
   .head h1 {
     margin: 0 0 0.35rem;
     font-size: 1.35rem;
+    color: #e8eaed;
   }
   .sub {
     margin: 0;
@@ -270,9 +296,10 @@
     border: 1px solid #2a2f38;
     border-radius: 10px;
   }
-  .panel h2 {
-    margin: 0 0 0.75rem;
+  .section-title {
+    margin: 0 0 1rem;
     font-size: 1.05rem;
+    color: #e8eaed;
   }
   .panel-head {
     display: flex;
@@ -283,6 +310,8 @@
   }
   .panel-head h2 {
     margin: 0;
+    font-size: 1.05rem;
+    color: #e8eaed;
   }
   .adv-list {
     list-style: none;
@@ -295,63 +324,135 @@
     align-items: flex-start;
     justify-content: space-between;
     gap: 0.75rem;
-    padding: 0.85rem 0;
+    padding: 1rem 0.85rem;
+    margin: 0 -0.85rem;
+    border-radius: 8px;
     border-bottom: 1px solid #2a2f38;
   }
   .adv:last-child {
     border-bottom: none;
+    padding-bottom: 0.25rem;
   }
-  .meta strong {
+  .adv:first-child {
+    padding-top: 0.25rem;
+  }
+  .adv-name {
     display: block;
     color: #e8eaed;
-    font-size: 1rem;
+    font-size: 1.02rem;
+    font-weight: 600;
   }
   .file {
     display: block;
     font-size: 0.8rem;
     color: #9aa0a6;
-    margin-top: 0.2rem;
+    margin-top: 0.25rem;
   }
   .when {
     display: block;
     font-size: 0.78rem;
     color: #9aa0a6;
-    margin-top: 0.25rem;
+    margin-top: 0.3rem;
   }
   .adv-actions {
     display: flex;
     flex-wrap: wrap;
     gap: 0.5rem;
+    align-items: center;
   }
-  .field {
-    display: block;
-    margin-bottom: 0.75rem;
-    font-size: 0.85rem;
+
+  .catalog-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(16rem, 1fr));
+    gap: 1rem;
+  }
+  .story-card {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    background: #1a1d23;
+    border: 1px solid #2a2f38;
+    border-radius: 10px;
+    padding: 1rem 1.1rem 1.1rem;
+    min-height: 11rem;
+  }
+  .genre-pill {
+    display: inline-block;
+    padding: 0.2rem 0.6rem;
+    border-radius: 12px;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    margin-bottom: 0.55rem;
+  }
+  .genre-pill.genre-mystery {
+    background: #8ab4f8;
+    color: #0f1114;
+  }
+  .genre-pill.genre-thriller,
+  .genre-pill.genre-horror {
+    background: #f28b82;
+    color: #0f1114;
+  }
+  .genre-pill.genre-drama,
+  .genre-pill.genre-fantasy {
+    background: #c58af9;
+    color: #0f1114;
+  }
+  .genre-pill.genre-comedy {
+    background: #fdd663;
+    color: #0f1114;
+  }
+  .genre-pill.genre-sci-fi {
+    background: #81c995;
+    color: #0f1114;
+  }
+  .genre-pill.genre-unknown {
+    background: #2a2f38;
     color: #9aa0a6;
   }
-  .inp {
-    display: block;
+  .card-title {
+    margin: 0 0 0.45rem;
+    font-size: 1.08rem;
+    font-weight: 600;
+    color: #e8eaed;
+    line-height: 1.25;
+  }
+  .card-desc {
+    margin: 0;
+    flex: 1;
+    font-size: 0.85rem;
+    line-height: 1.45;
+    color: #9aa0a6;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .card-play {
+    margin-top: 1rem;
     width: 100%;
-    max-width: 22rem;
-    box-sizing: border-box;
-    margin-top: 0.35rem;
-    padding: 0.45rem 0.55rem;
-    border-radius: 8px;
-    border: 1px solid #3c4043;
-    background: #0f1114;
-    color: #e8eaed;
   }
-  .select {
-    display: block;
-    margin-top: 0.35rem;
-    padding: 0.4rem 0.55rem;
-    border-radius: 8px;
-    border: 1px solid #3c4043;
-    background: #0f1114;
-    color: #e8eaed;
+
+  .create-blurb {
+    margin: 0 0 1rem;
     font-size: 0.9rem;
-    max-width: 100%;
+    color: #9aa0a6;
+    line-height: 1.5;
   }
+  .create-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem;
+  }
+  .link-btn {
+    display: inline-block;
+    text-decoration: none;
+    text-align: center;
+    box-sizing: border-box;
+  }
+
   .btn {
     cursor: pointer;
     border: 1px solid #3c4043;

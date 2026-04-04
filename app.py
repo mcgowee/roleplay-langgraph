@@ -647,6 +647,8 @@ def list_games():
                         "file": filename.replace(".json", ""),
                         "title": data.get("title", filename),
                         "opening": data.get("opening", ""),
+                        "description": data.get("description", ""),
+                        "genre": data.get("genre", ""),
                         "narrator_model": data.get("narrator", {}).get(
                             "model", DEFAULT_MODEL
                         ),
