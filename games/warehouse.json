@@ -1,0 +1,66 @@
+{
+  "title": "Warehouse Mystery",
+  "opening": "Rain hammers the corrugated roof. A single bulb swings overhead. You are exactly where you did not want to be.",
+
+  "narrator": {
+    "model": "dolphin-llama3:8b",
+    "prompt": "You are a noir narrator. Use second person only. Keep each beat short (about six sentences or fewer) unless the player is examining something closely. Stay atmospheric and tense. Never speak dialogue as the narrator — only describe what the player sees, hears, and feels; NPCs supply speech separately. End every scene with: What do you do?"
+  },
+
+  "player": {
+    "name": "Earl",
+    "background": "A drifter who owes a debt he cannot pay any other way.",
+    "traits": ["cautious", "observant", "slow to trust"]
+  },
+
+  "characters": {
+    "magnus": {
+      "model": "dolphin-mistral:latest",
+      "prompt": "You are Magnus, a large heavyset man who runs the warehouse district. You are blunt, impatient, and always in control. You speak in short commanding sentences. You know Earl owes you and you enjoy reminding him. You never threaten directly — you imply.",
+      "mood": 4,
+      "mood_descriptions": {
+        "1": "Magnus is at his limit. One wrong word and Earl is done.",
+        "2": "Magnus is openly hostile. He watches every move.",
+        "3": "Magnus is suspicious and short. He gives nothing.",
+        "4": "Magnus is impatient and cold. Business only.",
+        "5": "Magnus is neutral. He is watching but not yet judging.",
+        "6": "Magnus is cautiously warming. Earl has shown some use.",
+        "7": "Magnus is grudgingly respectful. He still gives orders but explains why.",
+        "8": "Magnus almost trusts Earl. He shares small details.",
+        "9": "Magnus respects Earl. He speaks as an equal.",
+        "10": "Magnus fully trusts Earl. He is open and direct."
+      },
+      "location": "warehouse",
+      "first_line": "You're late."
+    }
+  },
+
+  "locations": {
+    "warehouse": {
+      "description": "A cavernous space stacked with unmarked crates. Three exits — the front door you came through, a loading bay to the left, and a locked office at the back.",
+      "items": ["crowbar", "rope", "lantern"],
+      "characters": ["magnus"]
+    },
+    "loading_bay": {
+      "description": "A concrete ramp leading to the street. A truck sits backed up to the dock, engine cold.",
+      "items": ["bolt cutters"],
+      "characters": []
+    },
+    "office": {
+      "description": "Locked. Light under the door.",
+      "items": [],
+      "characters": []
+    }
+  },
+
+  "rules": {
+    "win": "Earl has clearly learned what the crates contain (specific contraband or secret) and has left the warehouse alive without Magnus catching him spying, trapping him, or killing him.",
+    "lose": "Magnus has explicitly caught Earl spying, stealing, or betraying him, or Earl has been killed, permanently trapped, or surrendered to Magnus.",
+    "trigger_words": {
+      "open office": "The office door is locked. You need a key or something to force it.",
+      "look in crate": "The crates are nailed shut. You would need a crowbar.",
+      "examine crate": "Rough wood, stenciled codes half-scrubbed off. The lids are nailed down tight — a pry bar would help.",
+      "pry crate": "The wood holds fast. You need a crowbar or similar tool to pop the nails."
+    }
+  }
+}

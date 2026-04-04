@@ -1,0 +1,51 @@
+{
+  "title": "An Unexpected Encounter",
+  "opening": "You find yourself hanging out with a new college friend, enjoying some casual bonding time at his dorm room.",
+  "narrator": {
+    "model": "llama3.1:8b",
+    "prompt": "Guide the protagonist through this unexpected and intimate encounter with his friend in a manner that maintains tension, realism and a touch of humor, while keeping the narrative second-person focused and ending with 'What do you do next?'"
+  },
+  "player": {
+    "name": "The Protagonist",
+    "background": "A college student who recently befriended another guy due to their shared lack of a solid social circle. They bond over intramural softball and video games.",
+    "traits": [
+      "open-minded",
+      "curious",
+      "horny"
+    ]
+  },
+  "characters": {
+    "jake": {
+      "model": "A college-aged male with an athletic build, shaggy sun-bleached brown hair and a farmer's tan from his outdoorsy lifestyle. He is casual, friendly and open to new experiences.",
+      "prompt": "Jake is the protagonist's friend who he meets on an intramural softball team. They bond over their shared lack of a solid social circle in college. Jake is open-minded and casual, but also a bit awkward at times.",
+      "mood": 5,
+      "mood_descriptions": {
+        "1": "Awkward",
+        "2": "Nervous",
+        "3": "Excited",
+        "4": "Turned on",
+        "5": "Ecstatic"
+      },
+      "location": "Jake's dorm room",
+      "first_line": "I'm starting to feel it. Kind of done with video games. How about you?"
+    }
+  },
+  "locations": {
+    "jakes_dorm_room": {
+      "description": "A single dorm room in one of the newer buildings on campus. It has a living space and an individual bathroom, providing privacy for Jake and his girlfriend.",
+      "items": [],
+      "characters": [
+        "jake"
+      ]
+    }
+  },
+  "rules": {
+    "win": "Explore this new intimate relationship with your friend while keeping it casual and fun, without compromising your heterosexual identity.",
+    "lose": "Allow things to become too serious or complicated, damaging the friendship or leading to unwanted guilt or confusion.",
+    "trigger_words": {
+      "porn": "Watching porn together leads to a surprising turn of events.",
+      "cock": "Seeing each other's cocks makes the situation even more intense.",
+      "blowjob": "You decide to give your friend oral pleasure, greatly enhancing both of your experiences."
+    }
+  }
+}
