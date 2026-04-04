@@ -38,6 +38,7 @@
 
   let paused = $state(false);
   let turnCount = $state(0);
+  let currentLocation = $state<string | null>(null);
 
   let loadSlotInput = $state(0);
   let deleteSlotInput = $state(0);
@@ -150,6 +151,9 @@
       if (typeof (data as { turns?: number }).turns === "number") {
         turnCount = (data as { turns?: number }).turns!;
       }
+      if (typeof (data as { location?: string }).location === "string") {
+        currentLocation = (data as { location?: string }).location!;
+      }
     } catch {
       messages = [
         ...messages,
@@ -188,6 +192,9 @@
       }
       if (typeof (statusData as Record<string, unknown>)?.turns === "number") {
         turnCount = (statusData as Record<string, unknown>).turns as number;
+      }
+      if (typeof (statusData as Record<string, unknown>)?.location === "string") {
+        currentLocation = (statusData as Record<string, unknown>).location as string;
       }
     } catch {
       actionError = "Status request failed";
@@ -411,6 +418,7 @@
         if (typeof adv?.active_slot === "number") slot = adv.active_slot;
         paused = !!d.paused;
         statusData = d;
+        if (typeof d.location === "string") currentLocation = d.location;
         syncPlayUrl();
         ready = true;
       } catch {
@@ -440,6 +448,9 @@
         <p class="sidebar-meta">
           Slot {slot} · Turn {turnCount} · Adventure #{adventureId}
         </p>
+        {#if currentLocation}
+          <p class="sidebar-location">{currentLocation.replace(/_/g, " ")}</p>
+        {/if}
       </div>
 
       <nav class="sidebar-tabs">
@@ -670,6 +681,13 @@
     margin: 0.25rem 0 0;
     font-size: 0.75rem;
     color: #9aa0a6;
+  }
+  .sidebar-location {
+    margin: 0.35rem 0 0;
+    font-size: 0.8rem;
+    color: #81c995;
+    font-weight: 500;
+    text-transform: capitalize;
   }
 
   .sidebar-tabs {

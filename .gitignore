@@ -10,6 +10,9 @@ __pycache__/
 # Database
 rpg.db
 
+# Game content (copied separately, may contain NSFW)
+games/
+
 # Sessions and logs (runtime data)
 sessions/
 logs/
