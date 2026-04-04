@@ -45,12 +45,21 @@ Master tracking for the LLM abstraction, auth, and deployment work.
 - [x] 24. Update play page to use `adventure_id`
 - [x] 25. Full end-to-end test of auth flow
 
-## Phase 5 — Hostinger Deployment
+## Phase 5 — Hostinger Deployment — DONE
 
-- [ ] 26. Set up Hostinger VPS account
-- [ ] 27. Dockerfile + deploy config
-- [ ] 28. DNS + SSL
-- [ ] 29. First deploy
+- [x] 26. VPS already running (Ubuntu 24.04 LTS, KVM 1, 45.132.241.60)
+- [x] 27. Deployed directly (no Docker) — gunicorn + node, matching existing VPS setup
+- [x] 28. DNS: `rpg.earl-mcgowen.com` → A record to VPS IP. SSL via existing Let's Encrypt.
+- [x] 29. First deploy — live at **https://rpg.earl-mcgowen.com**
+
+### VPS deployment details
+- App root: `/var/www/rpg-engine/`
+- Flask: gunicorn on port 5051 (`rpg-flask.service`)
+- SvelteKit: node on port 3002 (`rpg-web.service`)
+- nginx: reverse proxy on 443, proxies all traffic to SvelteKit
+- `.env`: Azure provider (`LLM_PROVIDER=azure`, `gpt-4o-mini`)
+- Deploy command (from desktop): `rsync -avz --exclude='node_modules' --exclude='.svelte-kit' --exclude='__pycache__' --exclude='.env' --exclude='rpg.db' --exclude='sessions' --exclude='logs' --exclude='.venv' --exclude='.git' . root@45.132.241.60:/var/www/rpg-engine/`
+- After rsync: SSH in, rebuild SvelteKit (`cd web && npm run build`), restart services (`systemctl restart rpg-flask rpg-web`)
 
 ## Workflow
 
