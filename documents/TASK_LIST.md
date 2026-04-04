@@ -17,10 +17,10 @@ Master tracking for the LLM abstraction, auth, and deployment work.
 - [x] 4. Install `bcrypt` in venv (`pip install bcrypt`)
 - [x] 5. Verify Flask server starts without errors
 - [x] 6. Test web UI: register, login, create adventure, play a few turns
-- [ ] 7. Fix `play.py` CLI client to work with new auth + adventure API (or add legacy bypass)
-- [ ] 8. Remove dead file `src/lib/playBootstrap.ts`
-- [ ] 9. Fix `proxyFlaskText` double Set-Cookie relay in `flask.ts`
-- [ ] 10. Commit working state to git
+- [x] 7. Fix `play.py` CLI client to work with new auth + adventure API
+- [x] 8. Remove dead file `src/lib/playBootstrap.ts` (already removed by Cursor)
+- [x] 9. Fix `proxyFlaskText` double Set-Cookie relay in `flask.ts`
+- [x] 10. Commit working state to git — `d999503`
 
 ## Phase 2 — Azure Provider (code only, no deployment)
 
