@@ -3,6 +3,7 @@
   import { goto } from "$app/navigation";
 
   type Game = {
+    id: number;
     file: string;
     title: string;
     opening?: string;
@@ -123,7 +124,7 @@
     }
   }
 
-  async function startAdventureWithGame(gameFile: string) {
+  async function startAdventureWithGame(gameContentId: number) {
     busy = true;
     advError = null;
     try {
@@ -131,7 +132,7 @@
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ game_file: gameFile }),
+        body: JSON.stringify({ game_content_id: gameContentId }),
       });
       const data = await r.json();
       if (!r.ok) {
@@ -242,7 +243,7 @@
               type="button"
               class="btn primary card-play"
               disabled={busy}
-              onclick={() => startAdventureWithGame(g.file)}
+              onclick={() => startAdventureWithGame(g.id)}
             >
               {busy ? "Starting…" : "Play"}
             </button>

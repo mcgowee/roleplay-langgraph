@@ -22,7 +22,7 @@ from config import (
     FLASK_DEBUG,
     SECRET_KEY,
 )
-from db import get_db, init_db
+from db import get_db, init_db, seed_global_games
 from llm import get_llm, cleanup_llm_cache
 from logger import get_logger
 
@@ -161,6 +161,28 @@ def load_game(game_name: str) -> State:
         "rules": normalize_rules(game.get("rules")),
         "game_title": game["title"],
         "opening": game.get("opening", "") or "",
+        "inventory": [],
+        "turn_count": 0,
+        "paused": False,
+    }
+
+
+def _build_state_from_json(game_data: dict) -> State:
+    """Build a game State from parsed game JSON data."""
+    if not game_data.get("locations"):
+        raise ValueError("Game JSON must include a non-empty locations object")
+    return {
+        "message": "",
+        "response": "",
+        "history": [],
+        "narrator": normalize_narrator(game_data.get("narrator")),
+        "player": normalize_player(game_data.get("player")),
+        "characters": normalize_characters(game_data.get("characters")),
+        "location": list(game_data["locations"].keys())[0],
+        "locations": game_data["locations"],
+        "rules": normalize_rules(game_data.get("rules")),
+        "game_title": game_data.get("title", "Untitled"),
+        "opening": game_data.get("opening", "") or "",
         "inventory": [],
         "turn_count": 0,
         "paused": False,
@@ -604,11 +626,31 @@ def ensure_adventure_in_memory(conn, row) -> Optional[tuple]:
         active_games[session_id] = saved
         return None
 
+    gcid = row["game_content_id"]
+    if gcid is not None:
+        gc_row = conn.execute(
+            "SELECT game_json FROM game_content WHERE id = ?", (gcid,)
+        ).fetchone()
+        if not gc_row:
+            return 404, {"error": "Game not found"}
+        try:
+            game_data = json.loads(gc_row["game_json"])
+            state = _build_state_from_json(game_data)
+        except (json.JSONDecodeError, TypeError, ValueError) as e:
+            logger.error("Failed to reload game_content %s: %s", gcid, e)
+            return 404, {"error": "Invalid story data"}
+        active_games[session_id] = state
+        return None
+
+    game_file_key = (row["game_file"] or "").strip()
+    if not game_file_key:
+        return 404, {"error": "Game not found"}
+
     try:
-        state = load_game(row["game_file"])
+        state = load_game(game_file_key)
     except Exception as e:
-        logger.error("Failed to reload game %s: %s", row["game_file"], e)
-        return 404, {"error": f"Game not found: {row['game_file']}"}
+        logger.error("Failed to reload game %s: %s", game_file_key, e)
+        return 404, {"error": f"Game not found: {game_file_key}"}
 
     active_games[session_id] = state
     return None
@@ -635,31 +677,35 @@ def build_opening_message(state: dict) -> str:
 # --- Flask routes ---
 @app.route("/games", methods=["GET"])
 def list_games():
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            """
+            SELECT id, title, description, genre, game_json
+            FROM game_content
+            WHERE is_global = 1 OR is_public = 1
+            ORDER BY is_global DESC, play_count DESC, title ASC
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
     games = []
-    for filename in sorted(os.listdir(GAMES_DIR)):
-        if filename.endswith(".json"):
-            path = os.path.join(GAMES_DIR, filename)
-            try:
-                with open(path, "r") as f:
-                    data = json.load(f)
-                games.append(
-                    {
-                        "file": filename.replace(".json", ""),
-                        "title": data.get("title", filename),
-                        "opening": data.get("opening", ""),
-                        "description": data.get("description", ""),
-                        "genre": data.get("genre", ""),
-                        "narrator_model": data.get("narrator", {}).get(
-                            "model", DEFAULT_MODEL
-                        ),
-                        "character_models": {
-                            name: char.get("model", DEFAULT_MODEL)
-                            for name, char in data.get("characters", {}).items()
-                        },
-                    }
-                )
-            except Exception as e:
-                logger.error(f"Error reading game {filename}: {e}")
+    for row in rows:
+        try:
+            data = json.loads(row["game_json"])
+        except (json.JSONDecodeError, TypeError):
+            continue
+        games.append(
+            {
+                "id": row["id"],
+                "file": data.get("title", "").lower().replace(" ", "_"),
+                "title": row["title"],
+                "description": row["description"] or "",
+                "genre": row["genre"] or "",
+                "opening": data.get("opening", ""),
+            }
+        )
     return jsonify({"games": games})
 
 
@@ -771,41 +817,92 @@ def list_adventures():
 @login_required
 def create_adventure():
     data = request.get_json(silent=True) or {}
+    game_content_id = data.get("game_content_id")
     game_file = (data.get("game_file") or "").strip().replace(".json", "")
-    if not game_file:
-        return jsonify({"error": "game_file is required"}), 400
-
-    game_path = os.path.join(GAMES_DIR, f"{game_file}.json")
-    if not os.path.isfile(game_path):
-        return jsonify({"error": f"Game not found: {game_file}"}), 404
-
-    try:
-        with open(game_path, "r") as f:
-            game_json = json.load(f)
-    except OSError as e:
-        logger.error("Read game %s: %s", game_path, e)
-        return jsonify({"error": "Could not read game file"}), 500
-
-    name = (data.get("name") or "").strip() or game_json.get("title") or game_file
-
-    try:
-        state = load_game(game_file)
-    except Exception as e:
-        logger.error("load_game %s: %s", game_file, e)
-        return jsonify({"error": f"Invalid game: {game_file}"}), 400
-
-    session_key = f"adv_{secrets.token_hex(16)}"
-    active_games[session_key] = state
-    opening = build_opening_message(state)
 
     conn = get_db()
     try:
+        if game_content_id is not None:
+            try:
+                gcid = int(game_content_id)
+            except (TypeError, ValueError):
+                return jsonify({"error": "invalid game_content_id"}), 400
+
+            gc_row = conn.execute(
+                "SELECT * FROM game_content WHERE id = ?", (gcid,)
+            ).fetchone()
+            if not gc_row:
+                return jsonify({"error": "Story not found"}), 404
+
+            if (
+                not gc_row["is_global"]
+                and not gc_row["is_public"]
+                and gc_row["user_id"] != g.user_id
+            ):
+                return jsonify({"error": "Story not found"}), 404
+
+            try:
+                game_data = json.loads(gc_row["game_json"])
+            except (json.JSONDecodeError, TypeError):
+                return jsonify({"error": "Invalid story data"}), 400
+
+            name = (data.get("name") or "").strip() or gc_row["title"]
+
+            if gc_row["user_id"] != g.user_id:
+                cur_gc = conn.execute(
+                    """
+                    INSERT INTO game_content (user_id, title, description, genre, game_json,
+                        source_id, original_author_id, is_public, is_global)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0)
+                    """,
+                    (
+                        g.user_id,
+                        gc_row["title"],
+                        gc_row["description"],
+                        gc_row["genre"],
+                        gc_row["game_json"],
+                        gcid,
+                        gc_row["original_author_id"] or gc_row["user_id"],
+                    ),
+                )
+                user_gc_id = cur_gc.lastrowid
+                conn.execute(
+                    "UPDATE game_content SET play_count = play_count + 1 WHERE id = ?",
+                    (gcid,),
+                )
+            else:
+                user_gc_id = gcid
+
+            state = _build_state_from_json(game_data)
+
+        elif game_file:
+            game_path = os.path.join(GAMES_DIR, f"{game_file}.json")
+            if not os.path.isfile(game_path):
+                return jsonify({"error": f"Game not found: {game_file}"}), 404
+
+            try:
+                state = load_game(game_file)
+            except Exception as e:
+                logger.error("load_game %s: %s", game_file, e)
+                return jsonify({"error": f"Invalid game: {game_file}"}), 400
+
+            name = (data.get("name") or "").strip() or state.get(
+                "game_title", game_file
+            )
+            user_gc_id = None
+        else:
+            return jsonify({"error": "game_content_id or game_file is required"}), 400
+
+        session_key = f"adv_{secrets.token_hex(16)}"
+        active_games[session_key] = state
+        opening = build_opening_message(state)
+
         cur = conn.execute(
             """
-            INSERT INTO adventures (user_id, game_file, name, session_id, last_played)
-            VALUES (?, ?, ?, ?, datetime('now'))
+            INSERT INTO adventures (user_id, game_file, name, session_id, game_content_id, last_played)
+            VALUES (?, ?, ?, ?, ?, datetime('now'))
             """,
-            (g.user_id, game_file, name, session_key),
+            (g.user_id, game_file or "", name, session_key, user_gc_id),
         )
         adventure_id = cur.lastrowid
         upsert_save_slot_db(conn, adventure_id, 0, state)
@@ -847,6 +944,255 @@ def delete_adventure(adventure_id: int):
         conn.close()
 
     return jsonify({"ok": True})
+
+
+@app.route("/game-content", methods=["GET"])
+@login_required
+def list_my_game_content():
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            """
+            SELECT gc.id, gc.title, gc.description, gc.genre, gc.is_public,
+                   gc.source_id, gc.play_count, gc.created_at, gc.updated_at,
+                   u.uid as original_author_name
+            FROM game_content gc
+            LEFT JOIN users u ON gc.original_author_id = u.id
+            WHERE gc.user_id = ?
+            ORDER BY gc.updated_at DESC
+            """,
+            (g.user_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    stories = [
+        {
+            "id": r["id"],
+            "title": r["title"],
+            "description": r["description"],
+            "genre": r["genre"],
+            "is_public": bool(r["is_public"]),
+            "source_id": r["source_id"],
+            "play_count": r["play_count"],
+            "original_author": r["original_author_name"],
+            "created_at": r["created_at"],
+            "updated_at": r["updated_at"],
+        }
+        for r in rows
+    ]
+    return jsonify({"stories": stories})
+
+
+@app.route("/game-content", methods=["POST"])
+@login_required
+def create_game_content():
+    data = request.get_json(silent=True) or {}
+    title = (data.get("title") or "").strip()
+    if not title:
+        return jsonify({"error": "title is required"}), 400
+
+    game_json_raw = data.get("game_json")
+    if not game_json_raw:
+        return jsonify({"error": "game_json is required"}), 400
+
+    if isinstance(game_json_raw, str):
+        try:
+            game_data = json.loads(game_json_raw)
+        except json.JSONDecodeError as e:
+            return jsonify({"error": f"Invalid JSON: {e}"}), 400
+    elif isinstance(game_json_raw, dict):
+        game_data = game_json_raw
+    else:
+        return jsonify({"error": "game_json must be a JSON string or object"}), 400
+
+    if not game_data.get("locations"):
+        return jsonify({"error": "Game JSON must include a 'locations' object"}), 400
+    if not game_data.get("title"):
+        game_data["title"] = title
+
+    description = (
+        (data.get("description") or "").strip() or game_data.get("description", "")
+    )
+    genre = (data.get("genre") or "").strip() or game_data.get("genre", "")
+
+    conn = get_db()
+    try:
+        cur = conn.execute(
+            """
+            INSERT INTO game_content (user_id, title, description, genre, game_json,
+                original_author_id, is_public, is_global)
+            VALUES (?, ?, ?, ?, ?, ?, 0, 0)
+            """,
+            (
+                g.user_id,
+                title,
+                description,
+                genre,
+                json.dumps(game_data, ensure_ascii=False),
+                g.user_id,
+            ),
+        )
+        conn.commit()
+        story_id = cur.lastrowid
+    finally:
+        conn.close()
+
+    return jsonify({"id": story_id, "title": title}), 201
+
+
+@app.route("/game-content/<int:story_id>", methods=["PUT"])
+@login_required
+def update_game_content(story_id: int):
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT * FROM game_content WHERE id = ? AND user_id = ?",
+            (story_id, g.user_id),
+        ).fetchone()
+        if not row:
+            return jsonify({"error": "Story not found"}), 404
+
+        data = request.get_json(silent=True) or {}
+        title = (data.get("title") or "").strip() or row["title"]
+        description = (
+            data["description"] if "description" in data else row["description"]
+        )
+        genre = data["genre"] if "genre" in data else row["genre"]
+
+        game_json_raw = data.get("game_json")
+        if game_json_raw is not None:
+            if isinstance(game_json_raw, str):
+                try:
+                    game_data = json.loads(game_json_raw)
+                except json.JSONDecodeError as e:
+                    return jsonify({"error": f"Invalid JSON: {e}"}), 400
+            elif isinstance(game_json_raw, dict):
+                game_data = game_json_raw
+            else:
+                return jsonify(
+                    {"error": "game_json must be a JSON string or object"}
+                ), 400
+
+            if not game_data.get("locations"):
+                return jsonify(
+                    {"error": "Game JSON must include a 'locations' object"}
+                ), 400
+            game_json_str = json.dumps(game_data, ensure_ascii=False)
+        else:
+            game_json_str = row["game_json"]
+
+        conn.execute(
+            """
+            UPDATE game_content
+            SET title = ?, description = ?, genre = ?, game_json = ?, updated_at = datetime('now')
+            WHERE id = ? AND user_id = ?
+            """,
+            (title, description, genre, game_json_str, story_id, g.user_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return jsonify({"ok": True})
+
+
+@app.route("/game-content/<int:story_id>", methods=["DELETE"])
+@login_required
+def delete_game_content(story_id: int):
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT * FROM game_content WHERE id = ? AND user_id = ?",
+            (story_id, g.user_id),
+        ).fetchone()
+        if not row:
+            return jsonify({"error": "Story not found"}), 404
+
+        adv_count = conn.execute(
+            "SELECT COUNT(*) as c FROM adventures WHERE game_content_id = ?",
+            (story_id,),
+        ).fetchone()["c"]
+        if adv_count > 0:
+            return jsonify(
+                {
+                    "error": f"Cannot delete: {adv_count} adventure(s) use this story. Delete them first."
+                }
+            ), 409
+
+        conn.execute(
+            "DELETE FROM game_content WHERE id = ? AND user_id = ?",
+            (story_id, g.user_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return jsonify({"ok": True})
+
+
+@app.route("/game-content/<int:story_id>/publish", methods=["POST"])
+@login_required
+def publish_game_content(story_id: int):
+    new_state = 0
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT * FROM game_content WHERE id = ? AND user_id = ?",
+            (story_id, g.user_id),
+        ).fetchone()
+        if not row:
+            return jsonify({"error": "Story not found"}), 404
+
+        new_state = 0 if row["is_public"] else 1
+        conn.execute(
+            "UPDATE game_content SET is_public = ?, updated_at = datetime('now') WHERE id = ?",
+            (new_state, story_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return jsonify({"ok": True, "is_public": bool(new_state)})
+
+
+@app.route("/community", methods=["GET"])
+def browse_community():
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            """
+            SELECT gc.id, gc.title, gc.description, gc.genre, gc.play_count,
+                   gc.created_at, gc.is_global,
+                   u.uid as author_name,
+                   ou.uid as original_author_name
+            FROM game_content gc
+            LEFT JOIN users u ON gc.user_id = u.id
+            LEFT JOIN users ou ON gc.original_author_id = ou.id
+            WHERE gc.is_public = 1 OR gc.is_global = 1
+            ORDER BY gc.is_global DESC, gc.play_count DESC, gc.created_at DESC
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    stories = [
+        {
+            "id": r["id"],
+            "title": r["title"],
+            "description": r["description"],
+            "genre": r["genre"],
+            "play_count": r["play_count"],
+            "author": r["author_name"] or "System",
+            "original_author": r["original_author_name"]
+            or r["author_name"]
+            or "System",
+            "is_global": bool(r["is_global"]),
+            "created_at": r["created_at"],
+        }
+        for r in rows
+    ]
+    return jsonify({"stories": stories})
 
 
 # --- Gameplay (adventure-scoped) ---
@@ -1233,6 +1579,7 @@ def feedback():
 
 
 init_db()
+seed_global_games(str(GAMES_DIR))
 
 
 if __name__ == "__main__":
