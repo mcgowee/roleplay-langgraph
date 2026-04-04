@@ -37,6 +37,7 @@
   let feedbackBusy = $state(false);
 
   let paused = $state(false);
+  let turnCount = $state(0);
 
   let loadSlotInput = $state(0);
   let deleteSlotInput = $state(0);
@@ -146,6 +147,9 @@
           text: (data as { response?: string }).response ?? "",
         },
       ];
+      if (typeof (data as { turns?: number }).turns === "number") {
+        turnCount = (data as { turns?: number }).turns!;
+      }
     } catch {
       messages = [
         ...messages,
@@ -181,6 +185,9 @@
       if (typeof adv?.active_slot === "number") slot = adv.active_slot;
       if ("paused" in (statusData ?? {})) {
         paused = !!(statusData as Record<string, unknown>).paused;
+      }
+      if (typeof (statusData as Record<string, unknown>)?.turns === "number") {
+        turnCount = (statusData as Record<string, unknown>).turns as number;
       }
     } catch {
       actionError = "Status request failed";
@@ -431,7 +438,7 @@
           {adventureName ?? gameFile ?? "Adventure"}
         </h2>
         <p class="sidebar-meta">
-          Slot {slot} · Adventure #{adventureId}
+          Slot {slot} · Turn {turnCount} · Adventure #{adventureId}
         </p>
       </div>
 
