@@ -24,11 +24,11 @@ Master tracking for the LLM abstraction, auth, and deployment work.
 
 ## Phase 2 — Azure Provider (code only, no deployment)
 
-- [ ] 11. Add Azure provider to `llm/`
-- [ ] 12. Add Azure config vars to `config.py`
-- [ ] 13. Add `langchain_openai` to `requirements.txt`
-- [ ] 14. Test locally by pointing Azure provider at Azure trial
-- [ ] 15. Verify a game works end-to-end on Azure
+- [x] 11. Add Azure provider to `llm/`
+- [x] 12. Add Azure config vars to `config.py` + `python-dotenv` support
+- [x] 13. Add `langchain_openai` to `requirements.txt`
+- [x] 14. Test locally — Ollama still works, Azure works via `.env`
+- [x] 15. Verify a game works end-to-end on Azure — confirmed, NSFW blocked by Azure filters
 
 ## Phase 3 — Game Rating + Content Filtering
 
