@@ -49,6 +49,7 @@
   {#if showNav}
     <nav class="site-nav">
       <div class="nav-left">
+        <span class="brand">RPG Engine</span>
         <a href="/">Lobby</a>
         <a href="/play">Play</a>
         <a href="/tools">Tools</a>
@@ -112,6 +113,12 @@
   }
   .logout:hover {
     border-color: #5f6368;
+  }
+  .brand {
+    color: #e8eaed;
+    font-weight: 700;
+    font-size: 0.9rem;
+    margin-right: 0.5rem;
   }
   .site-nav a {
     color: #8ab4f8;
