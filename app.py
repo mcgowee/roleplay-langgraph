@@ -7,6 +7,7 @@ import os
 import secrets
 from pathlib import Path
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -667,6 +668,19 @@ chain = graph.compile()
 # --- Game state in memory (keyed by per-adventure session_id string) ---
 active_games = {}
 
+_adventure_locks_guard = threading.Lock()
+_adventure_locks: dict[str, threading.Lock] = {}
+CHAT_LOCK_TIMEOUT_S = 60
+
+
+def _get_adventure_lock(session_id: str) -> threading.Lock:
+    with _adventure_locks_guard:
+        lock = _adventure_locks.get(session_id)
+        if lock is None:
+            lock = threading.Lock()
+            _adventure_locks[session_id] = lock
+        return lock
+
 
 # --- SQLite persistence for adventures ---
 def _serialize_state(state: dict) -> str:
@@ -1085,6 +1099,9 @@ def delete_adventure(adventure_id: int):
         sid = row["session_id"]
         if sid and sid in active_games:
             del active_games[sid]
+        if sid:
+            with _adventure_locks_guard:
+                _adventure_locks.pop(sid, None)
 
         conn.execute("DELETE FROM save_slots WHERE adventure_id = ?", (adventure_id,))
         conn.execute(
@@ -1621,35 +1638,46 @@ def chat():
             return jsonify(err[1]), err[0]
         session_id = row["session_id"]
         slot = row["active_slot"]
-        state = active_games[session_id]
-        patch_state_engine_fields(state)
-        sanitized_message = sanitize_input(message.strip())
-        state["message"] = sanitized_message
 
+        adv_lock = _get_adventure_lock(session_id)
+        if not adv_lock.acquire(timeout=CHAT_LOCK_TIMEOUT_S):
+            return jsonify(
+                {
+                    "error": "Another turn is still in progress. Try again in a moment.",
+                }
+            ), 429
         try:
-            result = chain.invoke(state)
-        except Exception as e:
-            logger.error(f"Chain execution error: {e}")
-            return jsonify({"error": f"Internal error: {str(e)}"}), 500
+            state = active_games[session_id]
+            patch_state_engine_fields(state)
+            sanitized_message = sanitize_input(message.strip())
+            state["message"] = sanitized_message
 
-        active_games[session_id] = result
-        upsert_save_slot_db(conn, aid, slot, result)
-        conn.execute(
-            "UPDATE adventures SET last_played = datetime('now') WHERE id = ?",
-            (aid,),
-        )
-        conn.commit()
+            try:
+                result = chain.invoke(state)
+            except Exception as e:
+                logger.error(f"Chain execution error: {e}")
+                return jsonify({"error": f"Internal error: {str(e)}"}), 500
 
-        moods = {name: char["mood"] for name, char in result["characters"].items()}
-        return jsonify(
-            {
-                "response": result["response"],
-                "moods": moods,
-                "location": result["location"],
-                "inventory": result["inventory"],
-                "turns": result["turn_count"],
-            }
-        )
+            active_games[session_id] = result
+            upsert_save_slot_db(conn, aid, slot, result)
+            conn.execute(
+                "UPDATE adventures SET last_played = datetime('now') WHERE id = ?",
+                (aid,),
+            )
+            conn.commit()
+
+            moods = {name: char["mood"] for name, char in result["characters"].items()}
+            return jsonify(
+                {
+                    "response": result["response"],
+                    "moods": moods,
+                    "location": result["location"],
+                    "inventory": result["inventory"],
+                    "turns": result["turn_count"],
+                }
+            )
+        finally:
+            adv_lock.release()
     finally:
         conn.close()
 
