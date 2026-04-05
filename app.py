@@ -1649,6 +1649,22 @@ def chat():
         try:
             state = active_games[session_id]
             patch_state_engine_fields(state)
+            if state.get("paused"):
+                moods = {
+                    name: char["mood"] for name, char in state["characters"].items()
+                }
+                return jsonify(
+                    {
+                        "response": "The game is paused. Unpause to continue playing.",
+                        "moods": moods,
+                        "location": state["location"],
+                        "inventory": state.get("inventory", []),
+                        "turns": state.get(
+                            "turn_count", len(state.get("history") or [])
+                        ),
+                    }
+                )
+
             sanitized_message = sanitize_input(message.strip())
             state["message"] = sanitized_message
 
