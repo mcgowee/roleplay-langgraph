@@ -1,9 +1,11 @@
 from flask import Flask, g, jsonify, request, session
 from langgraph.graph import StateGraph, END
 from typing import TypedDict, Optional
+import importlib.util
 import json
 import os
 import secrets
+from pathlib import Path
 import sqlite3
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -23,7 +25,7 @@ from config import (
     SECRET_KEY,
 )
 from db import get_db, init_db, seed_global_games
-from llm import get_llm, cleanup_llm_cache
+from llm import get_llm
 from logger import get_logger
 
 logger = get_logger(__name__)
@@ -35,11 +37,56 @@ DEFAULT_NARRATOR_PROMPT = (
 
 app = Flask(__name__)
 app.secret_key = SECRET_KEY
+if not FLASK_DEBUG:
+    app.config["SESSION_COOKIE_HTTPONLY"] = True
+    app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+    if os.environ.get("SESSION_COOKIE_SECURE", "").lower() in ("1", "true", "yes"):
+        app.config["SESSION_COOKIE_SECURE"] = True
 
 FEEDBACK_CATEGORIES = frozenset(
     {"general", "confusing", "bug", "praise", "idea", "pacing", "tone", "other"}
 )
 FEEDBACK_TEXT_MAX = 8000
+
+if os.environ.get("SECRET_KEY") is None and not FLASK_DEBUG:
+    logger.warning(
+        "SECRET_KEY is not set in the environment — using a built-in default. "
+        "Set SECRET_KEY for production so sessions cannot be forged."
+    )
+
+
+def _llm_public_error_message(exc: BaseException) -> str:
+    msg = str(exc).lower()
+    if "rate" in msg and "limit" in msg:
+        return "The AI service is rate-limited. Try again in a few minutes."
+    if "content" in msg and "policy" in msg:
+        return "The request was blocked by content safety rules. Revise the text and try again."
+    if "401" in msg or "403" in msg or "unauthorized" in msg:
+        return "AI service authentication failed. Check server configuration."
+    if (
+        "connection" in msg
+        or "refused" in msg
+        or "timeout" in msg
+        or "connect" in msg
+        or "name or service not known" in msg
+    ):
+        return "Could not reach the AI service. Check that it is running and reachable."
+    return "The AI request failed. Try again later."
+
+
+def _validation_errors_for_game(data: dict) -> list[str]:
+    path = Path(__file__).resolve().parent / "scripts" / "validate_game_json.py"
+    if not path.is_file():
+        logger.warning("validate_game_json.py not found; skipping schema validation")
+        return []
+    spec = importlib.util.spec_from_file_location("validate_game_json", path)
+    if spec is None or spec.loader is None:
+        return []
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    errors, _warnings = mod.validate_game(data, "game.json")
+    return errors
+
 
 # --- Input sanitization ---
 def sanitize_input(text: str) -> str:
@@ -136,12 +183,35 @@ def normalize_rules(rules: Optional[dict]) -> dict:
     return r
 
 
+def normalize_locations(locations: Optional[dict]) -> dict:
+    """Ensure each location has description, items, and characters lists (engine-safe)."""
+    out = {}
+    for key, raw in (locations or {}).items():
+        if not isinstance(raw, dict):
+            continue
+        loc = dict(raw)
+        if not isinstance(loc.get("description"), str):
+            loc["description"] = str(loc.get("description") or "")
+        items = loc.get("items")
+        loc["items"] = items if isinstance(items, list) else []
+        ch = loc.get("characters")
+        loc["characters"] = ch if isinstance(ch, list) else []
+        out[key] = loc
+    return out
+
+
 def patch_state_engine_fields(state: dict) -> None:
     """Fill missing keys from hand-edited or AI-generated game JSON and old saves."""
     state["narrator"] = normalize_narrator(state.get("narrator"))
     state["characters"] = normalize_characters(state.get("characters"))
     state["player"] = normalize_player(state.get("player"))
     state["rules"] = normalize_rules(state.get("rules"))
+    locs = state.get("locations")
+    if isinstance(locs, dict):
+        state["locations"] = normalize_locations(locs)
+    # Legacy saves incremented turn_count once per graph node; reconcile to history length.
+    hist = state.get("history") or []
+    state["turn_count"] = len(hist)
 
 
 def load_game(game_name: str) -> State:
@@ -159,7 +229,7 @@ def load_game(game_name: str) -> State:
         "player": normalize_player(game.get("player")),
         "characters": normalize_characters(game.get("characters")),
         "location": list(game["locations"].keys())[0],
-        "locations": game["locations"],
+        "locations": normalize_locations(game["locations"]),
         "rules": normalize_rules(game.get("rules")),
         "game_title": game["title"],
         "opening": game.get("opening", "") or "",
@@ -181,7 +251,7 @@ def _build_state_from_json(game_data: dict) -> State:
         "player": normalize_player(game_data.get("player")),
         "characters": normalize_characters(game_data.get("characters")),
         "location": list(game_data["locations"].keys())[0],
-        "locations": game_data["locations"],
+        "locations": normalize_locations(game_data["locations"]),
         "rules": normalize_rules(game_data.get("rules")),
         "game_title": game_data.get("title", "Untitled"),
         "opening": game_data.get("opening", "") or "",
@@ -196,14 +266,14 @@ def movement_node(state: State) -> State:
     """Detect if the player is trying to move to a new location."""
     location_names = list(state["locations"].keys())
     if len(location_names) <= 1:
-        return {"turn_count": state["turn_count"] + 1}
+        return {}
 
     model = state["narrator"].get("model", DEFAULT_MODEL)
     try:
         llm = get_llm(model)
     except Exception as e:
         logger.error(f"Failed to get LLM: {e}")
-        return {"turn_count": state["turn_count"] + 1}
+        return {}
 
     prompt = f"""You are a movement detector for a text adventure game.
 The player is currently in: {state["location"]}
@@ -218,12 +288,12 @@ Is the player trying to move to a different location? If yes, reply with ONLY th
         for loc in location_names:
             if loc.lower() == result.lower() or loc.lower() in result.lower():
                 if loc != state["location"]:
-                    return {"location": loc, "turn_count": state["turn_count"] + 1}
+                    return {"location": loc}
                 break
     except Exception as e:
         logger.error(f"Movement node error: {e}")
 
-    return {"turn_count": state["turn_count"] + 1}
+    return {}
 
 
 def inventory_node(state: State) -> State:
@@ -231,14 +301,14 @@ def inventory_node(state: State) -> State:
     location = state["locations"][state["location"]]
     available_items = location.get("items", [])
     if not available_items:
-        return {"turn_count": state["turn_count"] + 1}
+        return {}
 
     model = state["narrator"].get("model", DEFAULT_MODEL)
     try:
         llm = get_llm(model)
     except Exception as e:
         logger.error(f"Failed to get LLM: {e}")
-        return {"turn_count": state["turn_count"] + 1}
+        return {}
 
     prompt = f"""You are an item pickup detector for a text adventure game.
 Items available in this location: {", ".join(available_items)}
@@ -255,20 +325,25 @@ Is the player trying to pick up or take an item? If yes, reply with ONLY the exa
                 if len(state["inventory"]) >= INVENTORY_WEIGHT_LIMIT:
                     return {
                         "response": f"Inventory full! You can't carry more than {INVENTORY_WEIGHT_LIMIT} items.",
-                        "turn_count": state["turn_count"] + 1,
                     }
                 updated_locations = json.loads(json.dumps(state["locations"]))
-                updated_locations[state["location"]]["items"].remove(item)
+                room = updated_locations.get(state["location"], {})
+                room_items = room.get("items")
+                if not isinstance(room_items, list) or item not in room_items:
+                    logger.warning("Inventory pickup: item not in room list: %r", item)
+                    return {}
+                room_items.remove(item)
+                room["items"] = room_items
+                updated_locations[state["location"]] = room
                 new_inventory = state["inventory"] + [item]
                 return {
                     "locations": updated_locations,
                     "inventory": new_inventory,
-                    "turn_count": state["turn_count"] + 1,
                 }
     except Exception as e:
         logger.error(f"Inventory node error: {e}")
 
-    return {"turn_count": state["turn_count"] + 1}
+    return {}
 
 
 def narrator_node(state: State) -> State:
@@ -282,7 +357,6 @@ def narrator_node(state: State) -> State:
         logger.error(f"Failed to get LLM: {e}")
         return {
             "response": "[System error: Could not connect to LLM. Try again.]",
-            "turn_count": state["turn_count"] + 1,
         }
 
     just_arrived = False
@@ -300,10 +374,10 @@ def narrator_node(state: State) -> State:
 
 Game: {state["game_title"]}
 Player: {player.get("name", "Adventurer")} — {player.get("background", "")}
-Current location: {state["location"]} — {location["description"]}
-Items here: {", ".join(location["items"]) or "none"}
+Current location: {state["location"]} — {location.get("description", "")}
+Items here: {", ".join(location.get("items") or []) or "none"}
 Player inventory: {", ".join(state["inventory"]) or "empty"}
-Characters here: {", ".join(location["characters"]) or "none"}
+Characters here: {", ".join(location.get("characters") or []) or "none"}
 {arrival_hint}
 Recent history:
 {history_text}
@@ -314,12 +388,14 @@ Narrate what happens next:"""
 
     try:
         narration = llm.invoke(prompt)
-        return {"response": narration, "turn_count": state["turn_count"] + 1}
+        return {"response": narration}
     except Exception as e:
         logger.error(f"Narrator node error: {e}")
         return {
-            "response": f"[Error: {str(e)}]\n\nLocation: {location['description']}",
-            "turn_count": state["turn_count"] + 1,
+            "response": (
+                f"[{_llm_public_error_message(e)}]\n\n"
+                f"Location: {location.get('description', '')}"
+            ),
         }
 
 
@@ -327,8 +403,15 @@ def mood_node(state: State) -> State:
     characters = state["characters"]
     updated_characters = dict(characters)
 
-    if not characters:
-        return {"turn_count": state["turn_count"] + 1}
+    room = state["locations"].get(state["location"], {}) or {}
+    npcs_here = [
+        name
+        for name in (room.get("characters") or [])
+        if name in characters
+    ]
+
+    if not npcs_here:
+        return {}
 
     # Parallelize mood updates
     def update_mood(npc_name: str, npc: dict) -> tuple:
@@ -338,7 +421,7 @@ def mood_node(state: State) -> State:
             llm = get_llm(model)
         except Exception as e:
             logger.error(f"Failed to get LLM for {npc_name}: {e}")
-            return npc_name, current_mood
+            return npc_name, npc
 
         prompt = f"""You are evaluating how a character's mood should change after a conversation exchange.
 
@@ -368,22 +451,22 @@ Reply with ONLY one word: UP, DOWN, or SAME."""
 
     with ThreadPoolExecutor(max_workers=4) as executor:
         futures = [
-            executor.submit(update_mood, name, char)
-            for name, char in characters.items()
+            executor.submit(update_mood, name, characters[name])
+            for name in npcs_here
         ]
         for future in as_completed(futures):
             name, updated_char = future.result()
             updated_characters[name] = updated_char
 
-    return {"characters": updated_characters, "turn_count": state["turn_count"] + 1}
+    return {"characters": updated_characters}
 
 
 def npc_node(state: State) -> State:
     location = state["locations"][state["location"]]
-    npcs_here = location["characters"]
+    npcs_here = location.get("characters") or []
 
     if not npcs_here:
-        return {"turn_count": state["turn_count"] + 1}
+        return {}
 
     history_text = "\n".join(state["history"][-6:])
     full_response = state["response"]
@@ -436,13 +519,14 @@ Respond as {npc_name} in one or two short sentences:"""
     if responses:
         full_response = f"{full_response}\n\n" + "\n\n".join(responses)
 
-    return {"response": full_response, "turn_count": state["turn_count"] + 1}
+    return {"response": full_response}
 
 
 def memory_node(state: State) -> State:
     turn = f"Player: {state['message']}\n{state['response']}"
     new_history = add_to_history(list(state["history"]), turn, HISTORY_LIMIT)
-    return {"history": new_history, "turn_count": state["turn_count"] + 1}
+    # One completed exchange == one history entry; keep counter aligned.
+    return {"history": new_history, "turn_count": len(new_history)}
 
 
 def rules_node(state: State) -> State:
@@ -455,20 +539,20 @@ def rules_node(state: State) -> State:
     for trigger, result_text in rules.get("trigger_words", {}).items():
         if trigger.lower() in message_lower:
             response = f"{response}\n\n{result_text}"
-            return {"response": response, "turn_count": state["turn_count"] + 1}
+            return {"response": response}
 
     # Check win/lose conditions
     win_cond = rules.get("win", "")
     lose_cond = rules.get("lose", "")
     if not win_cond and not lose_cond:
-        return {"turn_count": state["turn_count"] + 1}
+        return {}
 
     try:
         model = state["narrator"].get("model", DEFAULT_MODEL)
         llm = get_llm(model)
     except Exception as e:
         logger.error(f"Failed to get LLM: {e}")
-        return {"turn_count": state["turn_count"] + 1}
+        return {}
 
     history_text = "\n".join(state["history"][-6:])
     prompt = f"""You are a strict game rules judge. Use only what is stated in the recent history and the latest exchange.
@@ -493,14 +577,14 @@ Rules:
         result = llm.invoke(prompt).strip().upper()
     except Exception as e:
         logger.error(f"Rules check error: {e}")
-        return {"turn_count": state["turn_count"] + 1}
+        return {}
 
     if "WIN" in result:
         response = f"{response}\n\n🏆 [GAME OVER — YOU WIN! {win_cond}]"
     elif "LOSE" in result:
         response = f"{response}\n\n💀 [GAME OVER — YOU LOSE! {lose_cond}]"
 
-    return {"response": response, "turn_count": state["turn_count"] + 1}
+    return {"response": response}
 
 
 # --- Graph ---
@@ -659,7 +743,8 @@ def ensure_adventure_in_memory(conn, row) -> Optional[tuple]:
 
 
 def build_opening_message(state: dict) -> str:
-    room_desc = state["locations"][state["location"]]["description"]
+    room = state["locations"][state["location"]]
+    room_desc = room.get("description", "") if isinstance(room, dict) else ""
     intro = (state.get("opening") or "").strip()
     first_lines = [
         f"{name.title()}: {char['first_line']}"
@@ -683,7 +768,7 @@ def list_games():
     try:
         rows = conn.execute(
             """
-            SELECT id, title, description, genre, game_json
+            SELECT id, title, description, genre, game_json, catalog_file_stem
             FROM game_content
             WHERE is_global = 1 OR is_public = 1
             ORDER BY is_global DESC, play_count DESC, title ASC
@@ -698,10 +783,14 @@ def list_games():
             data = json.loads(row["game_json"])
         except (json.JSONDecodeError, TypeError):
             continue
+        stem = None
+        if "catalog_file_stem" in row.keys():
+            stem = (row["catalog_file_stem"] or "").strip() or None
+        slug = stem or data.get("title", "").lower().replace(" ", "_")
         games.append(
             {
                 "id": row["id"],
-                "file": data.get("title", "").lower().replace(" ", "_"),
+                "file": slug,
                 "title": row["title"],
                 "description": row["description"] or "",
                 "genre": row["genre"] or "",
@@ -791,7 +880,7 @@ def list_adventures():
     try:
         rows = conn.execute(
             """
-            SELECT id, game_file, name, session_id, created_at, last_played
+            SELECT id, game_file, game_content_id, name, session_id, created_at, last_played
             FROM adventures
             WHERE user_id = ?
             ORDER BY last_played DESC NULLS LAST, created_at DESC
@@ -801,8 +890,9 @@ def list_adventures():
     finally:
         conn.close()
 
-    adventures = [
-        {
+    adventures = []
+    for r in rows:
+        adv = {
             "id": r["id"],
             "game_file": r["game_file"],
             "name": r["name"],
@@ -810,8 +900,9 @@ def list_adventures():
             "created_at": r["created_at"],
             "last_played": r["last_played"],
         }
-        for r in rows
-    ]
+        if "game_content_id" in r.keys():
+            adv["game_content_id"] = r["game_content_id"]
+        adventures.append(adv)
     return jsonify({"adventures": adventures})
 
 
@@ -851,11 +942,14 @@ def create_adventure():
             name = (data.get("name") or "").strip() or gc_row["title"]
 
             if gc_row["user_id"] != g.user_id:
+                stem = None
+                if "catalog_file_stem" in gc_row.keys() and gc_row["catalog_file_stem"]:
+                    stem = str(gc_row["catalog_file_stem"]).strip() or None
                 cur_gc = conn.execute(
                     """
                     INSERT INTO game_content (user_id, title, description, genre, game_json,
-                        source_id, original_author_id, is_public, is_global)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0)
+                        source_id, original_author_id, is_public, is_global, catalog_file_stem)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?)
                     """,
                     (
                         g.user_id,
@@ -865,6 +959,7 @@ def create_adventure():
                         gc_row["game_json"],
                         gcid,
                         gc_row["original_author_id"] or gc_row["user_id"],
+                        stem,
                     ),
                 )
                 user_gc_id = cur_gc.lastrowid
@@ -1041,8 +1136,14 @@ def create_game_content():
     else:
         return jsonify({"error": "game_json must be a JSON string or object"}), 400
 
-    if not game_data.get("locations"):
-        return jsonify({"error": "Game JSON must include a 'locations' object"}), 400
+    locs = game_data.get("locations")
+    if not isinstance(locs, dict) or not locs:
+        return jsonify({"error": "Game JSON must include a non-empty 'locations' object"}), 400
+    game_data["locations"] = normalize_locations(locs)
+    if not game_data["locations"]:
+        return jsonify(
+            {"error": "locations must contain at least one valid room object"}
+        ), 400
     if not game_data.get("title"):
         game_data["title"] = title
 
@@ -1050,6 +1151,12 @@ def create_game_content():
         (data.get("description") or "").strip() or game_data.get("description", "")
     )
     genre = (data.get("genre") or "").strip() or game_data.get("genre", "")
+
+    verrors = _validation_errors_for_game(game_data)
+    if verrors:
+        return jsonify(
+            {"error": "Game JSON failed validation", "details": verrors[:20]}
+        ), 400
 
     conn = get_db()
     try:
@@ -1109,9 +1216,20 @@ def update_game_content(story_id: int):
                     {"error": "game_json must be a JSON string or object"}
                 ), 400
 
-            if not game_data.get("locations"):
+            locs = game_data.get("locations")
+            if not isinstance(locs, dict) or not locs:
                 return jsonify(
-                    {"error": "Game JSON must include a 'locations' object"}
+                    {"error": "Game JSON must include a non-empty 'locations' object"}
+                ), 400
+            game_data["locations"] = normalize_locations(locs)
+            if not game_data["locations"]:
+                return jsonify(
+                    {"error": "locations must contain at least one valid room object"}
+                ), 400
+            verrors = _validation_errors_for_game(game_data)
+            if verrors:
+                return jsonify(
+                    {"error": "Game JSON failed validation", "details": verrors[:20]}
                 ), 400
             game_json_str = json.dumps(game_data, ensure_ascii=False)
         else:
@@ -1330,7 +1448,7 @@ Respond with ONLY valid JSON."""
         ), 422
     except Exception as e:
         logger.exception("generate-story failed")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": _llm_public_error_message(e)}), 500
 
     if not isinstance(story, dict):
         return jsonify({"error": "AI response was not a JSON object"}), 422
@@ -1421,7 +1539,7 @@ Output rules:
         return jsonify({"text": out})
     except Exception as e:
         logger.exception("improve-story-text failed")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": _llm_public_error_message(e)}), 500
 
 
 # --- Gameplay (adventure-scoped) ---
