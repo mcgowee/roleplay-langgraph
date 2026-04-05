@@ -1,5 +1,6 @@
 <script lang="ts">
   import { goto } from "$app/navigation";
+  import FieldAiAssist from "$lib/components/FieldAiAssist.svelte";
 
   const JSON_PLACEHOLDER = `{
   "title": "My Story",
@@ -539,7 +540,16 @@
             />
           </label>
           <label class="form-field">
-            Opening <span class="req">*</span>
+            <span class="field-label-row">
+              <span class="field-label-text"
+                >Opening <span class="req">*</span></span
+              >
+              <FieldAiAssist
+                bind:value={opening}
+                field="opening"
+                disabled={saving || generating}
+              />
+            </span>
             <textarea
               rows="3"
               bind:value={opening}
@@ -547,7 +557,14 @@
             ></textarea>
           </label>
           <label class="form-field">
-            Description
+            <span class="field-label-row">
+              <span class="field-label-text">Description</span>
+              <FieldAiAssist
+                bind:value={description}
+                field="description"
+                disabled={saving || generating}
+              />
+            </span>
             <input
               type="text"
               bind:value={description}
@@ -565,7 +582,14 @@
             </select>
           </label>
           <label class="form-field">
-            Narrator style
+            <span class="field-label-row">
+              <span class="field-label-text">Narrator style</span>
+              <FieldAiAssist
+                bind:value={narratorStyle}
+                field="narrator_style"
+                disabled={saving || generating}
+              />
+            </span>
             <textarea
               rows="2"
               bind:value={narratorStyle}
@@ -586,7 +610,14 @@
             />
           </label>
           <label class="form-field">
-            Background
+            <span class="field-label-row">
+              <span class="field-label-text">Background</span>
+              <FieldAiAssist
+                bind:value={playerBackground}
+                field="player_background"
+                disabled={saving || generating}
+              />
+            </span>
             <textarea
               rows="2"
               bind:value={playerBackground}
@@ -619,7 +650,16 @@
             >
           </label>
           <label class="form-field">
-            Description <span class="req">*</span>
+            <span class="field-label-row">
+              <span class="field-label-text"
+                >Description <span class="req">*</span></span
+              >
+              <FieldAiAssist
+                bind:value={locationDescription}
+                field="location_description"
+                disabled={saving || generating}
+              />
+            </span>
             <textarea
               rows="3"
               bind:value={locationDescription}
@@ -658,7 +698,14 @@
               <span class="field-hint">Use lowercase with underscores</span>
             </label>
             <label class="form-field">
-              Personality prompt
+              <span class="field-label-row">
+                <span class="field-label-text">Personality prompt</span>
+                <FieldAiAssist
+                  bind:value={characterPrompt}
+                  field="character_prompt"
+                  disabled={saving || generating}
+                />
+              </span>
               <textarea
                 rows="2"
                 bind:value={characterPrompt}
@@ -666,7 +713,14 @@
               ></textarea>
             </label>
             <label class="form-field">
-              First line
+              <span class="field-label-row">
+                <span class="field-label-text">First line</span>
+                <FieldAiAssist
+                  bind:value={characterFirstLine}
+                  field="character_first_line"
+                  disabled={saving || generating}
+                />
+              </span>
               <input
                 type="text"
                 bind:value={characterFirstLine}
@@ -912,6 +966,20 @@
     letter-spacing: 0.05em;
     color: #9aa0a6;
     margin: 0 0 0.75rem;
+  }
+  .field-label-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.35rem 0.75rem;
+    margin-bottom: 0.3rem;
+  }
+  .field-label-text {
+    flex: 1;
+    min-width: 8rem;
+    font-size: 0.85rem;
+    color: #9aa0a6;
   }
   .form-field {
     display: block;

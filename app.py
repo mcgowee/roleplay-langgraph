@@ -1338,6 +1338,92 @@ Respond with ONLY valid JSON."""
     return jsonify({"story": story})
 
 
+_IMPROVE_STORY_TEXT_FIELDS: dict[str, str] = {
+    "opening": (
+        "Opening prose the player reads first (before the starting room). "
+        "Second person, present tense; set mood and hook without huge exposition dumps."
+    ),
+    "description": (
+        "One- or two-sentence catalog pitch for the story browser: enticing, spoiler-light."
+    ),
+    "narrator_style": (
+        "System instructions for the narrator LLM: tone, pacing, second person, never speak as NPCs, "
+        "end beats with a clear player prompt (e.g. “What do you do?”) where appropriate."
+    ),
+    "player_background": (
+        "Player character history and situation—concrete, playable, easy for the model to reuse in play."
+    ),
+    "location_description": (
+        "What the player sees in this starting location: sensory detail, layout hints, mood. Second person."
+    ),
+    "character_prompt": (
+        "System instructions for an NPC: personality, speech patterns, relationship to the player; "
+        "the NPC speaks in first person as themselves."
+    ),
+    "character_first_line": (
+        "The NPC’s first spoken line when the game begins—short, in-character."
+    ),
+}
+
+
+@app.route("/improve-story-text", methods=["POST"])
+@login_required
+def improve_story_text():
+    data = request.get_json(silent=True) or {}
+    field = (data.get("field") or "").strip()
+    text = (data.get("text") or "").strip()
+    instruction = (data.get("instruction") or "").strip()
+
+    if field not in _IMPROVE_STORY_TEXT_FIELDS:
+        return jsonify({"error": "invalid field"}), 400
+    if not text:
+        return jsonify({"error": "text is required"}), 400
+    if len(text) > 8000:
+        return jsonify({"error": "text must be at most 8000 characters"}), 400
+    if len(instruction) > 1500:
+        return jsonify({"error": "instruction must be at most 1500 characters"}), 400
+
+    purpose = _IMPROVE_STORY_TEXT_FIELDS[field]
+    if instruction:
+        task_block = f"Author request:\n{instruction}"
+    else:
+        task_block = (
+            "Task: Improve the draft—fix awkward phrasing, tighten prose, keep facts and names consistent. "
+            "Do not invent unrelated new plot unless the author asked for it."
+        )
+
+    prompt = f"""You help authors write content for a text-based RPG engine.
+
+Field id: {field}
+Purpose: {purpose}
+
+Current draft:
+---
+{text}
+---
+
+{task_block}
+
+Output rules:
+- Reply with ONLY the replacement text for this field.
+- No title line, no markdown code fences, no wrapping the entire answer in quotation marks."""
+
+    try:
+        llm = get_llm(DEFAULT_MODEL)
+        raw = llm.invoke(prompt)
+        out = _llm_result_to_text(raw).strip()
+        if out.startswith("```"):
+            out = _strip_markdown_json_fences(out)
+        if len(out) >= 2 and out[0] in "\"'" and out[-1] == out[0]:
+            out = out[1:-1].strip()
+        if len(out) > 12000:
+            out = out[:12000]
+        return jsonify({"text": out})
+    except Exception as e:
+        logger.exception("improve-story-text failed")
+        return jsonify({"error": str(e)}), 500
+
+
 # --- Gameplay (adventure-scoped) ---
 @app.route("/chat", methods=["POST"])
 @login_required
