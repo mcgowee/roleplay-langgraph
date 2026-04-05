@@ -1,6 +1,13 @@
 <script lang="ts">
   import { goto } from "$app/navigation";
+  import { get } from "svelte/store";
+  import { page } from "$app/stores";
   import { authState } from "$lib/auth.svelte";
+
+  function safeInternalPath(raw: string | null): string | null {
+    if (!raw || !raw.startsWith("/") || raw.startsWith("//")) return null;
+    return raw;
+  }
 
   let mode = $state<"login" | "register">("login");
   let uid = $state("");
@@ -36,7 +43,34 @@
         return;
       }
       authState.uid = data.uid ?? u;
-      await goto("/");
+
+      const uurl = get(page).url;
+      const pending = uurl.searchParams.get("pendingPlay");
+      if (pending && /^\d+$/.test(pending)) {
+        try {
+          const ar = await fetch("/api/adventures", {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              game_content_id: parseInt(pending, 10),
+            }),
+          });
+          const ad = (await ar.json()) as {
+            adventure?: { id?: number };
+            error?: string;
+          };
+          if (ar.ok && ad.adventure?.id != null) {
+            await goto(`/play?adventure=${ad.adventure.id}`);
+            return;
+          }
+        } catch {
+          /* fall through to lobby */
+        }
+      }
+
+      const next = safeInternalPath(uurl.searchParams.get("redirect"));
+      await goto(next ?? "/");
     } catch {
       err = "Network error";
     } finally {

@@ -1,68 +1,82 @@
 # Project Task List
 
-Master tracking for the LLM abstraction, auth, and deployment work.
+Master tracking for all project work.
 
-## Phase 1 — LLM Abstraction (local only, no Azure yet)
+## Completed Phases
 
-- [x] 1. Create `llm/` module with base protocol + Ollama provider
-- [x] 2. Update `app.py` to use new `llm/` module
-- [x] 3. Test locally — everything works exactly as before
+### Phase 1 — LLM Abstraction
+- [x] `llm/` module with base protocol, Ollama provider, Azure provider
+- [x] Config-driven provider selection via `LLM_PROVIDER` env var
+- [x] `python-dotenv` support for `.env` files
 
-> **Note:** Cursor jumped ahead and built Phase 4 (auth + database + adventures)
-> in the same pass as Phase 1. The `llm/` module is correct. The app.py rewrite
-> includes auth, adventures, and SQLite — all untested. We are fixing forward.
+### Phase 2 — Auth + Database
+- [x] SQLite schema: users, adventures, save_slots, game_content
+- [x] bcrypt auth with Flask session cookies
+- [x] Login/register endpoints and frontend login page
+- [x] Adventure-scoped gameplay (game_content_id)
 
-## Phase 1.5 — Fix Forward (stabilize Cursor's big-bang rewrite)
+### Phase 3 — Hostinger Deployment
+- [x] VPS: Ubuntu 24.04, gunicorn + node, nginx reverse proxy, SSL
+- [x] Live at https://rpg.earl-mcgowen.com
+- [x] GitHub auto-deploy via webhook (rpg-webhook.service)
+- [x] Deploy script at `/var/www/rpg-engine/deploy.sh`
 
-- [x] 4. Install `bcrypt` in venv (`pip install bcrypt`)
-- [x] 5. Verify Flask server starts without errors
-- [x] 6. Test web UI: register, login, create adventure, play a few turns
-- [x] 7. Fix `play.py` CLI client to work with new auth + adventure API
-- [x] 8. Remove dead file `src/lib/playBootstrap.ts` (already removed by Cursor)
-- [x] 9. Fix `proxyFlaskText` double Set-Cookie relay in `flask.ts`
-- [x] 10. Commit working state to git — `d999503`
+### Phase 4 — Story Creation + Community
+- [x] game_content DB table with seed from games/ folder
+- [x] Community browse page (/community)
+- [x] My Stories page (/stories) with CRUD
+- [x] Create Story page with Build form + Paste JSON tabs
+- [x] AI story generator (POST /generate-story)
+- [x] AI polish/rewrite controls on form fields (POST /improve-story-text)
+- [x] Copy-on-play with attribution tracking
+- [x] Lobby redesigned with story catalog cards
 
-## Phase 2 — Azure Provider (code only, no deployment)
+### Phase 5 — LangGraph Pipeline Improvements
+- [x] Mood scoping: only update NPCs in current room
+- [x] Conditional edges: skip unnecessary nodes
+- [x] Per-adventure locking on /chat
+- [x] Pause enforcement in /chat
+- [x] Narrator engine brief + strict move/pickup parsing
+- [x] NPC sees narrator beat for context
 
-- [x] 11. Add Azure provider to `llm/`
-- [x] 12. Add Azure config vars to `config.py` + `python-dotenv` support
-- [x] 13. Add `langchain_openai` to `requirements.txt`
-- [x] 14. Test locally — Ollama still works, Azure works via `.env`
-- [x] 15. Verify a game works end-to-end on Azure — confirmed, NSFW blocked by Azure filters
+## Next Up (Not Started)
 
-## Phase 3 — Game Rating + Content Filtering — SKIPPED
+### Graphics — AI-generated location images
+- [ ] Decide approach: per-location cached images via DALL-E 3 or similar
+- [ ] Backend endpoint to generate/cache images
+- [ ] Frontend: show location banner image in Play page
+- [ ] Budget: ~$0.04/image, 1-5 per story
 
-> Not needed. SFW/NSFW is handled at the deployment level: only copy SFW game
-> files to the hosted server. Azure's built-in content filters provide an
-> additional safety net. No code changes required.
+### Story Creation Enhancements
+- [ ] Guided form builder (multi-step wizard for non-technical users)
+- [ ] AI assist on Edit page (same polish controls as Create)
+- [ ] Story versioning (track edits over time)
 
-## Phase 4 — Auth + Database (DONE by Cursor, needs testing)
+### Gameplay Improvements
+- [ ] Streaming LLM responses (LangGraph astream for better perceived latency)
+- [ ] Quest/objective tracking node
+- [ ] Combat/challenge node (conditional edge)
+- [ ] NPC dialogue memory (per-NPC summaries across turns)
+- [ ] Merge movement+inventory into single structured LLM call
 
-- [x] 20. SQLite schema + `db.py`
-- [x] 21. `auth.py` + login endpoints
-- [x] 22. Refactor `app.py` endpoints to use adventures
-- [x] 23. Frontend login page + adventure picker
-- [x] 24. Update play page to use `adventure_id`
-- [x] 25. Full end-to-end test of auth flow
+### Infrastructure
+- [ ] Deploy script for game files (automate the rsync for games/)
+- [ ] Database backup strategy
+- [ ] Rate limiting on registration (if traffic grows)
+- [ ] Admin view for user/content management
 
-## Phase 5 — Hostinger Deployment — DONE
+## Deployment Details
 
-- [x] 26. VPS already running (Ubuntu 24.04 LTS, KVM 1, 45.132.241.60)
-- [x] 27. Deployed directly (no Docker) — gunicorn + node, matching existing VPS setup
-- [x] 28. DNS: `rpg.earl-mcgowen.com` → A record to VPS IP. SSL via existing Let's Encrypt.
-- [x] 29. First deploy — live at **https://rpg.earl-mcgowen.com**
-
-### VPS deployment details
-- App root: `/var/www/rpg-engine/`
-- Flask: gunicorn on port 5051 (`rpg-flask.service`)
-- SvelteKit: node on port 3002 (`rpg-web.service`)
-- nginx: reverse proxy on 443, proxies all traffic to SvelteKit
-- `.env`: Azure provider (`LLM_PROVIDER=azure`, `gpt-4o-mini`)
-- Deploy command (from desktop): `rsync -avz --exclude='node_modules' --exclude='.svelte-kit' --exclude='__pycache__' --exclude='.env' --exclude='rpg.db' --exclude='sessions' --exclude='logs' --exclude='.venv' --exclude='.git' . root@45.132.241.60:/var/www/rpg-engine/`
-- After rsync: SSH in, rebuild SvelteKit (`cd web && npm run build`), restart services (`systemctl restart rpg-flask rpg-web`)
+- **VPS**: 45.132.241.60 (srv674751.hstgr.cloud)
+- **App root**: `/var/www/rpg-engine/`
+- **Services**: rpg-flask (gunicorn:5051), rpg-web (node:3002), rpg-webhook (port 9000)
+- **Auto-deploy**: git push → GitHub webhook → deploy.sh
+- **Manual**: `rsync games/ root@45.132.241.60:/var/www/rpg-engine/games/`
+- **DB reset**: `ssh root@45.132.241.60 "rm -f /var/www/rpg-engine/rpg.db && systemctl restart rpg-flask"`
+- **Game copy**: `rsync -avz games/ root@45.132.241.60:/var/www/rpg-engine/games/`
 
 ## Workflow
 
 - **Claude Code** — architecture, planning, Cursor prompts, code review
-- **Cursor** — builds code from prompts
-- **Git** — commit before and after each Cursor prompt
+- **Cursor** — builds code from prompts (instructions, not code blocks)
+- **Git** — commit before and after each Cursor prompt, push triggers auto-deploy

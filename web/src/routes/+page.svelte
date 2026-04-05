@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { goto } from "$app/navigation";
+  import { authState } from "$lib/auth.svelte";
 
   type Game = {
     id: number;
@@ -14,6 +15,7 @@
   type Adventure = {
     id: number;
     game_file: string;
+    game_content_id?: number | null;
     name: string;
     last_played: string | null;
     created_at: string;
@@ -23,6 +25,7 @@
   let adventures = $state<Adventure[]>([]);
   let loadError = $state<string | null>(null);
   let advError = $state<string | null>(null);
+  let catalogLoading = $state(true);
   let busy = $state(false);
 
   function formatRelative(iso: string | null): string {
@@ -57,17 +60,22 @@
 
   async function loadGames() {
     loadError = null;
+    catalogLoading = true;
     try {
       const r = await fetch("/api/games", { credentials: "include" });
       const data = await r.json();
       if (!r.ok) {
         loadError =
           (data as { error?: string }).error ?? "Failed to load games";
+        games = [];
         return;
       }
       games = (data as { games?: Game[] }).games ?? [];
     } catch {
       loadError = "Could not reach the server.";
+      games = [];
+    } finally {
+      catalogLoading = false;
     }
   }
 
@@ -88,8 +96,18 @@
   }
 
   async function refreshAll() {
-    await Promise.all([loadGames(), loadAdventures()]);
+    await loadGames();
+    if (authState.uid) await loadAdventures();
   }
+
+  $effect(() => {
+    if (!authState.checked) return;
+    if (authState.uid) {
+      void loadAdventures();
+    } else {
+      adventures = [];
+    }
+  });
 
   function goPlay(id: number) {
     goto(`/play?adventure=${id}`);
@@ -124,7 +142,15 @@
     }
   }
 
+  function goLoginToPlay(gameContentId: number) {
+    goto(`/login?pendingPlay=${encodeURIComponent(String(gameContentId))}`);
+  }
+
   async function startAdventureWithGame(gameContentId: number) {
+    if (!authState.uid) {
+      goLoginToPlay(gameContentId);
+      return;
+    }
     busy = true;
     advError = null;
     try {
@@ -155,7 +181,7 @@
   }
 
   onMount(() => {
-    refreshAll();
+    void loadGames();
   });
 </script>
 
@@ -163,10 +189,17 @@
   <header class="head">
     <h1>Lobby</h1>
     <p class="sub">
-      Resume saved runs, browse the story catalog, or open the tools to draft or
-      validate JSON. Slot management lives on the
-      <a href="/play">Play</a> page. <a href="/tools">Tools</a> are available
-      without signing in.
+      {#if !authState.checked}
+        Checking session…
+      {:else if authState.uid}
+        Resume saved runs or start something new from the catalog. Slot tools
+        are on the <a href="/play">Play</a> page.
+        <a href="/tools">Tools</a> stay open without signing in.
+      {:else}
+        Browse the catalog and community stories without an account.
+        <strong>Log in</strong> to play, save, and continue adventures. Tools:
+        <a href="/tools">validate JSON</a>, story draft, feedback report.
+      {/if}
     </p>
   </header>
 
@@ -174,7 +207,7 @@
     <p class="err">{advError}</p>
   {/if}
 
-  {#if adventures.length > 0}
+  {#if authState.checked && authState.uid && adventures.length > 0}
     <section class="panel section-adventures">
       <div class="panel-head">
         <h2>Your Adventures</h2>
@@ -192,7 +225,13 @@
           <li class="adv">
             <div class="meta">
               <strong class="adv-name">{a.name}</strong>
-              <span class="file">{a.game_file}.json</span>
+              <span class="file"
+                >{a.game_file?.trim()
+                  ? `${a.game_file}.json`
+                  : a.game_content_id != null
+                    ? `Story #${a.game_content_id}`
+                    : "Custom story"}</span
+              >
               <span class="when"
                 >Last played {formatRelative(a.last_played)}</span>
             </div>
@@ -225,11 +264,13 @@
     {#if loadError}
       <p class="err">{loadError}</p>
       <button type="button" class="btn" onclick={loadGames}>Retry</button>
-    {:else if games.length === 0 && !loadError}
+    {:else if catalogLoading}
       <p class="muted">Loading games…</p>
+    {:else if games.length === 0}
+      <p class="muted">No stories in the catalog yet.</p>
     {:else}
       <div class="catalog-grid">
-        {#each games as g (g.file)}
+        {#each games as g (g.id)}
           <article class="story-card">
             <span class={genrePillClass(g.genre)}>
               {(g.genre ?? "").trim().replace(/-/g, " ") || "story"}
@@ -242,10 +283,18 @@
             <button
               type="button"
               class="btn primary card-play"
-              disabled={busy}
+              disabled={!authState.checked || (busy && !!authState.uid)}
               onclick={() => startAdventureWithGame(g.id)}
             >
-              {busy ? "Starting…" : "Play"}
+              {#if !authState.checked}
+                …
+              {:else if busy && authState.uid}
+                Starting…
+              {:else if !authState.uid}
+                Play (log in)
+              {:else}
+                Play
+              {/if}
             </button>
           </article>
         {/each}
@@ -259,7 +308,13 @@
       Build a custom game from a story outline or paste your own game JSON.
     </p>
     <div class="create-actions create-actions-primary">
-      <a href="/stories/create" class="btn primary link-btn">Create a Story</a>
+      {#if !authState.checked}
+        <span class="muted">Loading…</span>
+      {:else if authState.uid}
+        <a href="/stories/create" class="btn primary link-btn">Create a Story</a>
+      {:else}
+        <a href="/login" class="btn primary link-btn">Log in to create stories</a>
+      {/if}
       <a href="/community" class="btn primary link-btn">Browse Community</a>
     </div>
     <p class="create-tools-label">More tools</p>

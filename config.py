@@ -10,7 +10,7 @@ def get_env(key: str, default: str) -> str:
     return os.environ.get(key, default)
 
 
-BASE_DIR = Path.home() / "projects" / "roleplay-langgraph"
+BASE_DIR = Path(__file__).resolve().parent
 
 # Flask session signing. Set SECRET_KEY in the environment for production.
 SECRET_KEY = get_env(

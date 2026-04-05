@@ -8,6 +8,15 @@
 
   let { children }: { children: Snippet } = $props();
 
+  /** Routes players can open without an account (browse & tools). */
+  function isPublicPath(pathname: string): boolean {
+    if (pathname === "/login") return true;
+    if (pathname === "/" || pathname === "/community" || pathname === "/play")
+      return true;
+    if (pathname.startsWith("/tools")) return true;
+    return false;
+  }
+
   onMount(() => {
     void (async () => {
       await checkAuth();
@@ -16,26 +25,26 @@
         await goto("/");
         return;
       }
-      if (
-        !authState.uid &&
-        path !== "/login" &&
-        path !== "/community" &&
-        !path.startsWith("/tools")
-      ) {
+      if (!authState.uid && !isPublicPath(path)) {
         await goto("/login");
       }
     })();
   });
 
   let showNav = $derived(browser && authState.checked && authState.uid !== null);
+  let showGuestNav = $derived(
+    browser &&
+      authState.checked &&
+      !authState.uid &&
+      isPublicPath($page.url.pathname) &&
+      $page.url.pathname !== "/login"
+  );
   let bootLoading = $derived(browser && !authState.checked);
   let redirectHold = $derived(
     browser &&
       authState.checked &&
       !authState.uid &&
-      $page.url.pathname !== "/login" &&
-      $page.url.pathname !== "/community" &&
-      !$page.url.pathname.startsWith("/tools")
+      !isPublicPath($page.url.pathname)
   );
 </script>
 
@@ -61,6 +70,18 @@
       <div class="nav-right">
         <span class="who">{authState.uid}</span>
         <button type="button" class="logout" onclick={() => logout()}>Log out</button>
+      </div>
+    </nav>
+  {:else if showGuestNav}
+    <nav class="site-nav guest">
+      <div class="nav-left">
+        <span class="brand">RPG Engine</span>
+        <a href="/">Lobby</a>
+        <a href="/community">Community</a>
+        <a href="/tools">Tools</a>
+      </div>
+      <div class="nav-right">
+        <a href="/login" class="login-link">Log in</a>
       </div>
     </nav>
   {/if}
@@ -131,6 +152,15 @@
     font-weight: 500;
   }
   .site-nav a:hover {
+    text-decoration: underline;
+  }
+  .site-nav.guest .login-link {
+    color: #8ab4f8;
+    text-decoration: none;
+    font-size: 0.9rem;
+    font-weight: 500;
+  }
+  .site-nav.guest .login-link:hover {
     text-decoration: underline;
   }
   :global(body) {

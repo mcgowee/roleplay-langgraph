@@ -5,7 +5,7 @@ import logging
 import os
 import sqlite3
 
-from config import DATABASE_PATH
+from config import DATABASE_PATH, GAMES_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +61,7 @@ def init_db() -> None:
                 is_public BOOLEAN DEFAULT 0,
                 is_global BOOLEAN DEFAULT 0,
                 play_count INTEGER DEFAULT 0,
+                catalog_file_stem TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
@@ -84,9 +85,47 @@ def init_db() -> None:
             conn.execute(
                 "ALTER TABLE adventures ADD COLUMN game_content_id INTEGER REFERENCES game_content(id)"
             )
+        gc_cols = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(game_content)").fetchall()
+        }
+        if gc_cols and "catalog_file_stem" not in gc_cols:
+            conn.execute(
+                "ALTER TABLE game_content ADD COLUMN catalog_file_stem TEXT"
+            )
         conn.commit()
+        backfill_catalog_file_stems(conn, str(GAMES_DIR))
     finally:
         conn.close()
+
+
+def backfill_catalog_file_stems(conn: sqlite3.Connection, games_dir: str) -> None:
+    """Set catalog_file_stem for global catalog rows from on-disk JSON filenames."""
+    if not os.path.isdir(games_dir):
+        return
+    for name in os.listdir(games_dir):
+        if not name.endswith(".json"):
+            continue
+        stem = name[: -len(".json")]
+        path = os.path.join(games_dir, name)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+        title = (data.get("title") or stem).strip()
+        if not title:
+            continue
+        conn.execute(
+            """
+            UPDATE game_content
+            SET catalog_file_stem = ?
+            WHERE is_global = 1 AND title = ?
+              AND (catalog_file_stem IS NULL OR catalog_file_stem = '')
+            """,
+            (stem, title),
+        )
+    conn.commit()
 
 
 def seed_global_games(games_dir: str) -> None:
@@ -120,15 +159,17 @@ def seed_global_games(games_dir: str) -> None:
             genre = data.get("genre", "") or ""
             blob = json.dumps(data, ensure_ascii=False)
 
+            stem = name[: -len(".json")]
             conn.execute(
                 """
                 INSERT INTO game_content (
                     user_id, title, description, genre, game_json,
-                    source_id, original_author_id, is_public, is_global, play_count
+                    source_id, original_author_id, is_public, is_global, play_count,
+                    catalog_file_stem
                 )
-                VALUES (NULL, ?, ?, ?, ?, NULL, NULL, 1, 1, 0)
+                VALUES (NULL, ?, ?, ?, ?, NULL, NULL, 1, 1, 0, ?)
                 """,
-                (title, description, genre, blob),
+                (title, description, genre, blob, stem),
             )
             count += 1
 

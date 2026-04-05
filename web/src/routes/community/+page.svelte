@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { goto } from "$app/navigation";
-  import { authState } from "$lib/auth.svelte";
 
   type CommunityStory = {
     id: number;
@@ -18,7 +17,7 @@
   let stories = $state<CommunityStory[]>([]);
   let loading = $state(true);
   let loadError = $state<string | null>(null);
-  let busy = $state(false);
+  let busyStoryId = $state<number | null>(null);
 
   function genrePillClass(genre: string | undefined | null): string {
     const g = (genre ?? "").trim().toLowerCase();
@@ -62,7 +61,7 @@
   }
 
   async function playStory(id: number) {
-    busy = true;
+    busyStoryId = id;
     try {
       const r = await fetch("/api/adventures", {
         method: "POST",
@@ -71,7 +70,7 @@
         body: JSON.stringify({ game_content_id: id }),
       });
       if (r.status === 401) {
-        goto("/login");
+        goto(`/login?pendingPlay=${encodeURIComponent(String(id))}`);
         return;
       }
       const data = await r.json();
@@ -89,7 +88,7 @@
     } catch {
       loadError = "Start request failed";
     } finally {
-      busy = false;
+      busyStoryId = null;
     }
   }
 
@@ -99,13 +98,6 @@
 </script>
 
 <main class="wrap">
-  {#if authState.checked && !authState.uid}
-    <nav class="guest-nav" aria-label="Site">
-      <a href="/">Lobby</a>
-      <a href="/login">Log in</a>
-    </nav>
-  {/if}
-
   <header class="head">
     <h1>Community Stories</h1>
     <p class="sub">
@@ -143,10 +135,10 @@
           <button
             type="button"
             class="btn primary card-play"
-            disabled={busy}
+            disabled={busyStoryId !== null}
             onclick={() => playStory(s.id)}
           >
-            {busy ? "Starting…" : "Play"}
+            {busyStoryId === s.id ? "Starting…" : "Play"}
           </button>
         </article>
       {/each}
@@ -162,19 +154,6 @@
     background: #0f1114;
     min-height: calc(100vh - 42px);
     box-sizing: border-box;
-  }
-  .guest-nav {
-    display: flex;
-    gap: 1rem;
-    margin-bottom: 1rem;
-    font-size: 0.9rem;
-  }
-  .guest-nav a {
-    color: #8ab4f8;
-    text-decoration: none;
-  }
-  .guest-nav a:hover {
-    text-decoration: underline;
   }
   .head h1 {
     margin: 0 0 0.35rem;

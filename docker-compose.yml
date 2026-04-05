@@ -1,0 +1,56 @@
+# LangGraph RPG — API + web UI for production-like runs.
+#
+# 1. cp .env.example .env  → set SECRET_KEY, LLM_PROVIDER, and (if needed) Azure or Ollama URL.
+# 2. docker compose up --build
+# 3. Open http://localhost:3000  (web) — API is at http://localhost:5051 (internal: api:5051)
+#
+# Ollama on the Docker host (Linux): extra_hosts + OLLAMA_HOST below.
+# TLS: terminate at a reverse proxy; set SESSION_COOKIE_SECURE=true and SvelteKit ORIGIN.
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    env_file:
+      - .env
+    environment:
+      DATABASE_PATH: /data/rpg.db
+      LOGS_DIR: /data/logs
+      FEEDBACK_DIR: /data/logs/feedback
+      SESSIONS_DIR: /data/sessions
+      # Reach Ollama on the host from inside the container (Linux / recent Docker Desktop)
+      OLLAMA_HOST: ${OLLAMA_HOST:-http://host.docker.internal:11434}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - rpg-data:/data
+      # Optional: mount host games over the image copy
+      - ./games:/app/games:ro
+    ports:
+      - "5051:5051"
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+      args:
+        FLASK_API_URL: http://api:5051
+    environment:
+      FLASK_API_URL: http://api:5051
+      PORT: "3000"
+      HOST: "0.0.0.0"
+      # Public origin when behind HTTPS (e.g. https://rpg.example.com). Helps cookies/links.
+      ORIGIN: ${ORIGIN:-http://localhost:3000}
+      # Tools (/api/tools/*) need the repo root for Python scripts
+      RPG_REPO_ROOT: /repo
+    volumes:
+      - .:/repo:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  rpg-data:

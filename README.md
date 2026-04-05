@@ -78,7 +78,7 @@ python play.py
 
 ## Web UI (SvelteKit, optional)
 
-A small SvelteKit app proxies to Flask on the **server** (no CORS setup on Flask). **Lobby:** pick save slot (0–4), **New game** or **Continue**, refresh list. **Session toolbar:** status, save, list/delete slots, pause/unpause, playtest note → `/feedback`, end session. **Play:** chat as before. **Tools** (`/tools`): validate pasted game JSON, feedback report, story→draft JSON (Ollama). Set **`RPG_REPO_ROOT`** in `web/.env` if you only run `npm run dev` from `web/`.
+A small SvelteKit app proxies to Flask on the **server** (no CORS setup on Flask). **Lobby** and **Community** are readable without an account; **log in** to play, save, and manage **My Stories**. **Play:** chat UI with saves, pause, feedback. **Tools** (`/tools`): validate JSON, feedback report, story→draft (Ollama). Set **`RPG_REPO_ROOT`** in `web/.env` if you only run `npm run dev` from `web/`.
 
 ```bash
 # Terminal 1 — API
@@ -92,6 +92,25 @@ npm run dev
 ```
 
 Open the URL Vite prints (usually `http://localhost:5173`). Set `FLASK_API_URL` in `web/.env` if Flask is not on `127.0.0.1:5051`.
+
+### Production build (bare metal)
+
+```bash
+cd web && npm ci && npm run build
+HOST=0.0.0.0 PORT=3000 FLASK_API_URL=http://127.0.0.1:5051 npm start
+```
+
+### Docker (ship API + web)
+
+See **[documents/SHIPPING.md](documents/SHIPPING.md)** for env vars, HTTPS, and smoke tests.
+
+```bash
+cp .env.example .env   # set SECRET_KEY and LLM settings
+docker compose up --build
+```
+
+- UI: http://localhost:3000  
+- API health: http://localhost:5051/games  
 
 ## In-Game Commands
 
@@ -218,7 +237,7 @@ See `GAME_DESIGN_PROMPT.md` for a structured prompt template.
 
 ### LLM Caching
 
-LLM instances are cached by model name to avoid reconnection overhead. Call `cleanup_llm_cache()` on server shutdown.
+LLM instances are cached by model name to avoid reconnection overhead. The module exposes `cleanup_llm_cache()` if you want to clear the cache on a graceful shutdown hook.
 
 ### Input Sanitization
 

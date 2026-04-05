@@ -127,16 +127,26 @@ def pick_game():
             choice = input("Pick a game (number): ").strip()
             idx = int(choice) - 1
             if 0 <= idx < len(games):
-                return games[idx]["file"], games[idx]["title"]
+                g = games[idx]
+                gid = g.get("id")
+                if gid is not None:
+                    return int(gid), g["title"]
+                return g["file"], g["title"]
             print("Invalid choice. Try again.")
         except (ValueError, KeyboardInterrupt, EOFError):
             print("\nGoodbye.")
             sys.exit(0)
 
 
-def _create_new_adventure(game_file):
+def _create_new_adventure(game_ref):
+    """game_ref is either game_content_id (int) or legacy file stem (str)."""
     try:
-        res = session.post(f"{API}/adventures", json={"game_file": game_file})
+        payload = (
+            {"game_content_id": int(game_ref)}
+            if isinstance(game_ref, int)
+            else {"game_file": game_ref}
+        )
+        res = session.post(f"{API}/adventures", json=payload)
         data = res.json()
     except requests.exceptions.ConnectionError:
         print("\nError: Could not connect to game server.")
@@ -156,7 +166,7 @@ def _create_new_adventure(game_file):
     return aid, opening, slot
 
 
-def start_game(game_file):
+def start_game(game_ref, game_title_for_display: str):
     try:
         res = session.get(f"{API}/adventures")
         data = res.json()
@@ -171,12 +181,19 @@ def start_game(game_file):
         print(f"\n\033[91m{data.get('error', 'Could not list adventures')}\033[0m")
         sys.exit(1)
 
-    adventures = [
-        a for a in data.get("adventures", []) if a.get("game_file") == game_file
-    ]
+    if isinstance(game_ref, int):
+        adventures = [
+            a
+            for a in data.get("adventures", [])
+            if a.get("game_content_id") == game_ref
+        ]
+    else:
+        adventures = [
+            a for a in data.get("adventures", []) if a.get("game_file") == game_ref
+        ]
 
     if not adventures:
-        return _create_new_adventure(game_file)
+        return _create_new_adventure(game_ref)
 
     print("\nYou have existing adventures for this game:\n")
     for i, a in enumerate(adventures, 1):
@@ -195,7 +212,7 @@ def start_game(game_file):
             sys.exit(0)
 
         if choice in ("n", "new"):
-            return _create_new_adventure(game_file)
+            return _create_new_adventure(game_ref)
 
         try:
             idx = int(choice) - 1
@@ -401,7 +418,7 @@ def delete_slot(adventure_id, slot):
 def main():
     clear()
     login_or_register()
-    game_file, game_title = pick_game()
+    game_ref, game_title = pick_game()
 
     print(f"\n  \033[93m{game_title.upper()}\033[0m\n")
     print("  Type your actions and press Enter.")
@@ -417,7 +434,7 @@ def main():
     print("    quit         - Exit the game")
     print()
 
-    adventure_id, opening, slot = start_game(game_file)
+    adventure_id, opening, slot = start_game(game_ref, game_title)
     last_story_text = opening
     display_response(opening, {})
 
@@ -560,10 +577,11 @@ def main():
                 if not note_text:
                     print("\n\033[91mNote text is empty.\033[0m")
                     continue
+                gfile = game_ref if isinstance(game_ref, str) else ""
                 submit_feedback(
                     adventure_id,
                     slot,
-                    game_file,
+                    gfile,
                     game_title,
                     category,
                     note_text,

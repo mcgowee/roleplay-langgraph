@@ -16,6 +16,8 @@
   let adventureName = $state<string | null>(null);
   let gameFile = $state<string | null>(null);
   let noSession = $state(false);
+  /** True when status/chat failed because the user is not logged in. */
+  let authRequired = $state(false);
 
   let actionError = $state<string | null>(null);
   let actionOk = $state<string | null>(null);
@@ -39,6 +41,9 @@
   let paused = $state(false);
   let turnCount = $state(0);
   let currentLocation = $state<string | null>(null);
+  let milestones = $state<string[]>([]);
+  let milestoneProgress = $state(0);
+  let currentMilestone = $state<string | null>(null);
 
   let loadSlotInput = $state(0);
   let deleteSlotInput = $state(0);
@@ -148,11 +153,48 @@
           text: (data as { response?: string }).response ?? "",
         },
       ];
-      if (typeof (data as { turns?: number }).turns === "number") {
-        turnCount = (data as { turns?: number }).turns!;
+      const d = data as {
+        turns?: number;
+        location?: string;
+        moods?: Record<string, number>;
+        inventory?: string[];
+        milestones?: string[];
+        milestone_progress?: number;
+        current_milestone?: string | null;
+      };
+      if (typeof d.turns === "number") {
+        turnCount = d.turns;
       }
-      if (typeof (data as { location?: string }).location === "string") {
-        currentLocation = (data as { location?: string }).location!;
+      if (typeof d.location === "string") {
+        currentLocation = d.location;
+      }
+      if (Array.isArray(d.milestones)) {
+        milestones = d.milestones;
+      }
+      if (typeof d.milestone_progress === "number") {
+        milestoneProgress = d.milestone_progress;
+      }
+      if (d.current_milestone !== undefined) {
+        currentMilestone = d.current_milestone;
+      }
+      if (statusData) {
+        const inv = Array.isArray(d.inventory) ? d.inventory : null;
+        const next: Record<string, unknown> = {
+          ...statusData,
+          ...(typeof d.turns === "number" ? { turns: d.turns } : {}),
+          ...(typeof d.location === "string" ? { location: d.location } : {}),
+          ...(d.moods && typeof d.moods === "object" ? { moods: d.moods } : {}),
+          ...(inv ? { inventory: inv } : {}),
+        };
+        if (inv) {
+          const iw = String(
+            (statusData as { inventory_weight?: string }).inventory_weight ??
+              "0/10"
+          );
+          const limit = iw.includes("/") ? iw.split("/")[1] : "10";
+          next.inventory_weight = `${inv.length}/${limit}`;
+        }
+        statusData = next;
       }
     } catch {
       messages = [
@@ -195,6 +237,16 @@
       }
       if (typeof (statusData as Record<string, unknown>)?.location === "string") {
         currentLocation = (statusData as Record<string, unknown>).location as string;
+      }
+      const sd = statusData as Record<string, unknown>;
+      if (Array.isArray(sd?.milestones)) {
+        milestones = sd.milestones as string[];
+      }
+      if (typeof sd?.milestone_progress === "number") {
+        milestoneProgress = sd.milestone_progress as number;
+      }
+      if (sd?.current_milestone !== undefined) {
+        currentMilestone = sd.current_milestone as string | null;
       }
     } catch {
       actionError = "Status request failed";
@@ -391,6 +443,7 @@
     const id = raw != null && raw !== "" ? parseInt(raw, 10) : NaN;
     if (Number.isNaN(id) || id < 1) {
       noSession = true;
+      authRequired = false;
       ready = true;
       return;
     }
@@ -405,6 +458,7 @@
         const data = await r.json();
         if (!r.ok) {
           noSession = true;
+          authRequired = r.status === 401;
           ready = true;
           return;
         }
@@ -419,10 +473,14 @@
         paused = !!d.paused;
         statusData = d;
         if (typeof d.location === "string") currentLocation = d.location;
+        if (Array.isArray(d.milestones)) milestones = d.milestones as string[];
+        if (typeof d.milestone_progress === "number") milestoneProgress = d.milestone_progress as number;
+        if (d.current_milestone !== undefined) currentMilestone = d.current_milestone as string | null;
         syncPlayUrl();
         ready = true;
       } catch {
         noSession = true;
+        authRequired = false;
         ready = true;
       }
     })();
@@ -435,8 +493,24 @@
   </div>
 {:else if noSession}
   <div class="center-msg">
-    <p class="muted">No adventure selected. Open one from the lobby.</p>
-    <a href="/" class="btn primary link-btn">Go to Lobby</a>
+    {#if authRequired}
+      <p class="muted">Sign in to open this adventure.</p>
+      <a
+        href="/login?redirect={encodeURIComponent(
+          adventureId != null ? `/play?adventure=${adventureId}` : '/play'
+        )}"
+        class="btn primary link-btn"
+      >
+        Log in
+      </a>
+      <a href="/" class="btn link-btn subtle-outline">Lobby</a>
+    {:else}
+      <p class="muted">
+        No adventure selected. Pick a story from the lobby, or continue a saved
+        run after you log in.
+      </p>
+      <a href="/" class="btn primary link-btn">Go to Lobby</a>
+    {/if}
   </div>
 {:else}
   <div class="play-layout" class:sidebar-collapsed={!sidebarOpen}>
@@ -450,6 +524,19 @@
         </p>
         {#if currentLocation}
           <p class="sidebar-location">{currentLocation.replace(/_/g, " ")}</p>
+        {/if}
+        {#if milestones.length > 0}
+          <div class="sidebar-milestones">
+            <p class="milestones-label">Milestones</p>
+            <ul class="milestones-list">
+              {#each milestones as ms, i}
+                <li class="milestone-item" class:completed={i < milestoneProgress} class:current={i === milestoneProgress}>
+                  <span class="milestone-icon">{i < milestoneProgress ? "\u2713" : i === milestoneProgress ? "\u25B6" : "\u25CB"}</span>
+                  {ms}
+                </li>
+              {/each}
+            </ul>
+          </div>
         {/if}
       </div>
 
@@ -688,6 +775,47 @@
     color: #81c995;
     font-weight: 500;
     text-transform: capitalize;
+  }
+
+  .sidebar-milestones {
+    margin: 0.6rem 0 0;
+    padding: 0.5rem 0.6rem;
+    background: rgba(255, 255, 255, 0.04);
+    border-radius: 6px;
+  }
+
+  .milestones-label {
+    margin: 0 0 0.3rem;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #999;
+  }
+
+  .milestones-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+
+  .milestone-item {
+    font-size: 0.78rem;
+    padding: 0.15rem 0;
+    color: #777;
+  }
+
+  .milestone-item.completed {
+    color: #81c995;
+    text-decoration: line-through;
+  }
+
+  .milestone-item.current {
+    color: #e8eaed;
+    font-weight: 500;
+  }
+
+  .milestone-icon {
+    margin-right: 0.35rem;
   }
 
   .sidebar-tabs {
@@ -941,5 +1069,17 @@
     display: inline-block;
     text-decoration: none;
     text-align: center;
+  }
+  .link-btn.subtle-outline {
+    margin-left: 0.5rem;
+    padding: 0.45rem 0.85rem;
+    border-radius: 8px;
+    border: 1px solid #3c4043;
+    color: #bdc1c6;
+    background: transparent;
+  }
+  .link-btn.subtle-outline:hover {
+    border-color: #5f6368;
+    color: #e8eaed;
   }
 </style>

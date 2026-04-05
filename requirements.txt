@@ -8,5 +8,8 @@ langchain_community
 langchain_openai
 langgraph
 
+# Production WSGI (Dockerfile.api / bare metal)
+gunicorn
+
 # Optional: story_to_game_draft.py only needs flask/langgraph for the main app;
 # requests is required for that script + play.py

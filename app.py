@@ -203,6 +203,9 @@ class State(TypedDict):
     inventory: list
     turn_count: int
     paused: bool
+    milestones: list
+    milestone_progress: int
+    guide: str
     # Set for one invoke in /chat; stripped before save. Snapshot of world before movement/inventory.
     narrative_turn_snapshot: NotRequired[dict]
 
@@ -310,6 +313,10 @@ def load_game(game_name: str) -> State:
         "inventory": [],
         "turn_count": 0,
         "paused": False,
+        "milestones": game.get("milestones", []),
+        "milestone_progress": 0,
+        "guide": game.get("guide", ""),
+        "_graph_type": game.get("graph_type", "standard"),
     }
 
 
@@ -332,6 +339,10 @@ def _build_state_from_json(game_data: dict) -> State:
         "inventory": [],
         "turn_count": 0,
         "paused": False,
+        "milestones": game_data.get("milestones", []),
+        "milestone_progress": 0,
+        "guide": game_data.get("guide", ""),
+        "_graph_type": game_data.get("graph_type", "standard"),
     }
 
 
@@ -560,7 +571,10 @@ def npc_node(state: State) -> State:
 
     history_text = "\n".join(state["history"][-6:])
     full_response = state["response"]
+    # Use narrator beat if available (standard graph), fall back to last history entry (social graph)
     narrator_beat = (state.get("response") or "").strip()
+    if not narrator_beat and state["history"]:
+        narrator_beat = state["history"][-1]
 
     def get_npc_response(npc_name: str) -> Optional[str]:
         if npc_name not in state["characters"]:
@@ -616,6 +630,81 @@ Respond as {npc_name} in one or two short sentences:"""
     return {"response": full_response}
 
 
+def milestone_node(state: State) -> State:
+    """Check milestone progression via choice selection. No LLM needed."""
+    milestones = state.get("milestones") or []
+    progress = state.get("milestone_progress", 0)
+
+    # Nothing to check if no milestones or all complete
+    if not milestones or progress >= len(milestones):
+        return {}
+
+    current_milestone = milestones[progress]
+    player_message = state["message"].strip().lower()
+
+    # Check if the player's message contains the current milestone
+    if current_milestone.lower() in player_message:
+        new_progress = progress + 1
+        milestone_hint = f"[Milestone achieved: {current_milestone}]"
+        if new_progress < len(milestones):
+            milestone_hint += f" Next milestone: {milestones[new_progress]}"
+        else:
+            milestone_hint += " All milestones complete!"
+        return {
+            "milestone_progress": new_progress,
+            "response": milestone_hint,
+        }
+
+    # Check if the player tried to pick a future milestone
+    future_milestones = milestones[progress + 1:]
+    for future in future_milestones:
+        if future.lower() in player_message:
+            return {
+                "response": f"[Milestone blocked: you must first: {current_milestone}]",
+            }
+
+    # Normal message, not a milestone choice
+    return {}
+
+
+def guide_arrival_node(state: State) -> State:
+    """If the guide NPC isn't in the current room, move them here."""
+    guide_name = state.get("guide") or ""
+    if not guide_name:
+        return {}
+
+    # Check if guide exists in characters
+    if guide_name not in state["characters"]:
+        return {}
+
+    # Check if guide is already in the current room
+    current_room = state["locations"].get(state["location"], {})
+    room_characters = current_room.get("characters") or []
+    if guide_name in room_characters:
+        return {}
+
+    # Move the guide: remove from old room, add to current room
+    updated_locations = json.loads(json.dumps(state["locations"]))
+
+    # Remove guide from wherever they are now
+    for loc_key, loc_data in updated_locations.items():
+        chars = loc_data.get("characters") or []
+        if guide_name in chars:
+            chars.remove(guide_name)
+            loc_data["characters"] = chars
+
+    # Add guide to current room
+    current = updated_locations[state["location"]]
+    chars = current.get("characters") or []
+    chars.append(guide_name)
+    current["characters"] = chars
+
+    return {
+        "locations": updated_locations,
+        "response": f"[{guide_name.title()} arrives]",
+    }
+
+
 def memory_node(state: State) -> State:
     turn = f"Player: {state['message']}\n{state['response']}"
     new_history = add_to_history(list(state["history"]), turn, HISTORY_LIMIT)
@@ -640,6 +729,11 @@ def rules_node(state: State) -> State:
     lose_cond = rules.get("lose", "")
     if not win_cond and not lose_cond:
         return {}
+
+    # If milestones exist, block WIN until all are complete
+    milestones = state.get("milestones") or []
+    progress = state.get("milestone_progress", 0)
+    milestones_incomplete = milestones and progress < len(milestones)
 
     try:
         model = state["narrator"].get("model", DEFAULT_MODEL)
@@ -673,7 +767,7 @@ Rules:
         logger.error(f"Rules check error: {e}")
         return {}
 
-    if "WIN" in result:
+    if "WIN" in result and not milestones_incomplete:
         response = f"{response}\n\n🏆 [GAME OVER — YOU WIN! {win_cond}]"
     elif "LOSE" in result:
         response = f"{response}\n\n💀 [GAME OVER — YOU LOSE! {lose_cond}]"
@@ -721,41 +815,101 @@ def route_after_memory(state: State) -> str:
     return "rules"
 
 
-# --- Graph ---
-graph = StateGraph(State)
-graph.add_node("movement", movement_node)
-graph.add_node("inventory", inventory_node)
-graph.add_node("narrator", narrator_node)
-graph.add_node("mood", mood_node)
-graph.add_node("npc", npc_node)
-graph.add_node("memory", memory_node)
-graph.add_node("rules", rules_node)
+def route_social_entry(state: State) -> str:
+    """Social graph entry: skip to guide_arrival if only one location, else movement."""
+    if len(state["locations"]) <= 1:
+        return "guide_arrival"
+    return "movement"
 
-graph.set_conditional_entry_point(
-    route_graph_entry,
-    {"movement": "movement", "inventory": "inventory"},
-)
-graph.add_conditional_edges(
-    "movement",
-    route_after_movement,
-    {"inventory": "inventory", "narrator": "narrator"},
-)
-graph.add_edge("inventory", "narrator")
-graph.add_conditional_edges(
-    "narrator",
-    route_after_narrator,
-    {"mood": "mood", "memory": "memory"},
-)
-graph.add_edge("mood", "npc")
-graph.add_edge("npc", "memory")
-graph.add_conditional_edges(
-    "memory",
-    route_after_memory,
-    {END: END, "rules": "rules"},
-)
-graph.add_edge("rules", END)
 
-chain = graph.compile()
+# --- Graph builders ---
+def build_standard_graph():
+    """Build the standard 7-node graph: movement → inventory → narrator → mood → npc → memory → rules."""
+    g = StateGraph(State)
+    g.add_node("movement", movement_node)
+    g.add_node("inventory", inventory_node)
+    g.add_node("narrator", narrator_node)
+    g.add_node("mood", mood_node)
+    g.add_node("npc", npc_node)
+    g.add_node("memory", memory_node)
+    g.add_node("rules", rules_node)
+
+    g.set_conditional_entry_point(
+        route_graph_entry,
+        {"movement": "movement", "inventory": "inventory"},
+    )
+    g.add_conditional_edges(
+        "movement",
+        route_after_movement,
+        {"inventory": "inventory", "narrator": "narrator"},
+    )
+    g.add_edge("inventory", "narrator")
+    g.add_conditional_edges(
+        "narrator",
+        route_after_narrator,
+        {"mood": "mood", "memory": "memory"},
+    )
+    g.add_edge("mood", "npc")
+    g.add_edge("npc", "memory")
+    g.add_conditional_edges(
+        "memory",
+        route_after_memory,
+        {END: END, "rules": "rules"},
+    )
+    g.add_edge("rules", END)
+
+    return g.compile()
+
+
+def build_social_graph():
+    """Build the social graph: movement → guide_arrival → milestone → npc → narrator → memory → rules."""
+    g = StateGraph(State)
+
+    # Nodes
+    g.add_node("movement", movement_node)
+    g.add_node("guide_arrival", guide_arrival_node)
+    g.add_node("milestone", milestone_node)
+    g.add_node("narrator", narrator_node)
+    g.add_node("npc", npc_node)
+    g.add_node("memory", memory_node)
+    g.add_node("rules", rules_node)
+
+    # Entry: movement if multiple locations, otherwise skip to guide_arrival
+    g.set_conditional_entry_point(
+        route_social_entry,
+        {"movement": "movement", "guide_arrival": "guide_arrival"},
+    )
+
+    # movement → guide_arrival → milestone → npc → narrator → memory
+    g.add_edge("movement", "guide_arrival")
+    g.add_edge("guide_arrival", "milestone")
+    g.add_edge("milestone", "npc")
+    g.add_edge("npc", "narrator")
+    g.add_edge("narrator", "memory")
+
+    # After memory: check rules if they exist, otherwise END
+    g.add_conditional_edges(
+        "memory",
+        route_after_memory,
+        {END: END, "rules": "rules"},
+    )
+    g.add_edge("rules", END)
+
+    return g.compile()
+
+
+GRAPH_REGISTRY = {
+    "standard": build_standard_graph(),
+    "social": build_social_graph(),
+}
+
+
+def get_compiled_graph(graph_type: str):
+    """Look up a compiled graph by name; fall back to 'standard' if unknown."""
+    return GRAPH_REGISTRY.get(graph_type, GRAPH_REGISTRY["standard"])
+
+
+chain = GRAPH_REGISTRY["standard"]
 
 
 # --- Game state in memory (keyed by per-adventure session_id string) ---
@@ -1769,13 +1923,15 @@ def chat():
                 "room_item_names": list(room_now.get("items") or []),
             }
 
+            graph_type = state.get("_graph_type", "standard")
             try:
-                result = chain.invoke(state)
+                result = get_compiled_graph(graph_type).invoke(state)
             except Exception as e:
                 logger.error(f"Chain execution error: {e}")
                 return jsonify({"error": f"Internal error: {str(e)}"}), 500
 
             result.pop("narrative_turn_snapshot", None)
+            result["_graph_type"] = graph_type
             active_games[session_id] = result
             upsert_save_slot_db(conn, aid, slot, result)
             conn.execute(
@@ -1785,6 +1941,8 @@ def chat():
             conn.commit()
 
             moods = {name: char["mood"] for name, char in result["characters"].items()}
+            milestones = result.get("milestones") or []
+            m_progress = result.get("milestone_progress", 0)
             return jsonify(
                 {
                     "response": result["response"],
@@ -1792,6 +1950,9 @@ def chat():
                     "location": result["location"],
                     "inventory": result["inventory"],
                     "turns": result["turn_count"],
+                    "milestones": milestones,
+                    "milestone_progress": m_progress,
+                    "current_milestone": milestones[m_progress] if m_progress < len(milestones) else None,
                 }
             )
         finally:
@@ -1826,6 +1987,8 @@ def status():
         conn.close()
 
     hist = state.get("history") or []
+    milestones = state.get("milestones") or []
+    m_progress = state.get("milestone_progress", 0)
     payload = {
         "location": state["location"],
         "moods": {
@@ -1835,6 +1998,9 @@ def status():
         "inventory": state.get("inventory", []),
         "inventory_weight": f"{len(state.get('inventory', []))}/{INVENTORY_WEIGHT_LIMIT}",
         "paused": state.get("paused", False),
+        "milestones": milestones,
+        "milestone_progress": m_progress,
+        "current_milestone": milestones[m_progress] if m_progress < len(milestones) else None,
         "models": {
             "narrator": state["narrator"].get("model", DEFAULT_MODEL),
             "characters": {
