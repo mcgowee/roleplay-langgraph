@@ -587,6 +587,46 @@ Rules:
     return {"response": response}
 
 
+# --- Graph routing helpers (conditional edges) ---
+def _routing_current_room(state: State) -> dict:
+    loc = state.get("location") or ""
+    locs = state.get("locations") or {}
+    room = locs.get(loc)
+    return room if isinstance(room, dict) else {}
+
+
+def route_graph_entry(state: State) -> str:
+    if len(state["locations"]) <= 1:
+        return "inventory"
+    return "movement"
+
+
+def route_after_movement(state: State) -> str:
+    room = _routing_current_room(state)
+    items = room.get("items") or []
+    if not items:
+        return "narrator"
+    return "inventory"
+
+
+def route_after_narrator(state: State) -> str:
+    room = _routing_current_room(state)
+    npcs = room.get("characters") or []
+    if not npcs:
+        return "memory"
+    return "mood"
+
+
+def route_after_memory(state: State) -> str:
+    rules = state.get("rules") or {}
+    win = (rules.get("win") or "").strip()
+    lose = (rules.get("lose") or "").strip()
+    tw = rules.get("trigger_words") or {}
+    if not win and not lose and not tw:
+        return END
+    return "rules"
+
+
 # --- Graph ---
 graph = StateGraph(State)
 graph.add_node("movement", movement_node)
@@ -597,13 +637,28 @@ graph.add_node("npc", npc_node)
 graph.add_node("memory", memory_node)
 graph.add_node("rules", rules_node)
 
-graph.set_entry_point("movement")
-graph.add_edge("movement", "inventory")
+graph.set_conditional_entry_point(
+    route_graph_entry,
+    {"movement": "movement", "inventory": "inventory"},
+)
+graph.add_conditional_edges(
+    "movement",
+    route_after_movement,
+    {"inventory": "inventory", "narrator": "narrator"},
+)
 graph.add_edge("inventory", "narrator")
-graph.add_edge("narrator", "mood")
+graph.add_conditional_edges(
+    "narrator",
+    route_after_narrator,
+    {"mood": "mood", "memory": "memory"},
+)
 graph.add_edge("mood", "npc")
 graph.add_edge("npc", "memory")
-graph.add_edge("memory", "rules")
+graph.add_conditional_edges(
+    "memory",
+    route_after_memory,
+    {END: END, "rules": "rules"},
+)
 graph.add_edge("rules", END)
 
 chain = graph.compile()
