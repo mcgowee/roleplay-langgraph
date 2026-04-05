@@ -1,6 +1,6 @@
 from flask import Flask, g, jsonify, request, session
 from langgraph.graph import StateGraph, END
-from typing import TypedDict, Optional
+from typing import TypedDict, Optional, NotRequired
 import importlib.util
 import json
 import os
@@ -116,6 +116,77 @@ def add_to_history(history: list, turn: str, limit: int = HISTORY_LIMIT) -> list
     return history
 
 
+def _normalize_detector_reply(text: str) -> str:
+    """First line only; strip whitespace and simple wrapping quotes/backticks."""
+    s = (text or "").strip()
+    if not s:
+        return ""
+    line = s.split("\n", 1)[0].strip()
+    if len(line) >= 2 and line[0] == line[-1] and line[0] in "\"'`":
+        line = line[1:-1].strip()
+    return line
+
+
+def _build_narrative_engine_brief(state: dict) -> str:
+    """Summarize engine-resolved changes this turn for the narrator (ground truth)."""
+    snap = state.get("narrative_turn_snapshot")
+    if not isinstance(snap, dict):
+        return ""
+    loc0 = snap.get("location")
+    if not isinstance(loc0, str) or not loc0:
+        return ""
+    inv0 = list(snap.get("inventory") or [])
+    room0 = list(snap.get("room_item_names") or [])
+
+    loc1 = state.get("location") or loc0
+    inv1 = list(state.get("inventory") or [])
+    room = state.get("locations", {}).get(loc1, {}) or {}
+    if not isinstance(room, dict):
+        room = {}
+    room_items1 = list(room.get("items") or [])
+
+    lines: list[str] = []
+    if loc1 != loc0:
+        lines.append(
+            f"- Location changed this turn: {loc0} → {loc1}. You are now in {loc1}; "
+            "describe the new place — do not contradict this."
+        )
+    else:
+        lines.append(f"- Location unchanged: still in {loc1}.")
+
+    if inv1 != inv0:
+        added = [x for x in inv1 if x not in inv0]
+        removed = [x for x in inv0 if x not in inv1]
+        if added:
+            lines.append(
+                f"- The engine recorded a successful pickup: {', '.join(added)}. "
+                "The player is carrying these; reflect that naturally."
+            )
+        if removed:
+            lines.append(
+                f"- Items left the player's inventory this turn: {', '.join(removed)}."
+            )
+    else:
+        lines.append(
+            "- No successful pickup this turn (inventory unchanged by the engine)."
+        )
+
+    if loc1 == loc0 and sorted(room_items1) != sorted(room0):
+        lines.append(
+            f"- Items currently in this room (authoritative): "
+            f"{', '.join(room_items1) if room_items1 else 'none'}."
+        )
+
+    here = ", ".join(room.get("characters") or []) or "none"
+    lines.append(f"- Characters present in this location (IDs): {here}.")
+
+    return (
+        "Authoritative facts from the game engine — your prose must match these "
+        "(do not invent different locations, items, or pickups):\n"
+        + "\n".join(lines)
+    )
+
+
 # --- State ---
 class State(TypedDict):
     message: str
@@ -132,6 +203,8 @@ class State(TypedDict):
     inventory: list
     turn_count: int
     paused: bool
+    # Set for one invoke in /chat; stripped before save. Snapshot of world before movement/inventory.
+    narrative_turn_snapshot: NotRequired[dict]
 
 
 def normalize_narrator(narrator: Optional[dict]) -> dict:
@@ -282,15 +355,22 @@ Available locations: {", ".join(location_names)}
 
 Player said: {state["message"]}
 
-Is the player trying to move to a different location? If yes, reply with ONLY the exact location name from the list above. If no, reply with ONLY the word STAY."""
+Is the player trying to move to a different location? If yes, reply with ONLY the exact location key from the list above (same spelling and underscores). If no, reply with ONLY the word STAY."""
 
     try:
-        result = llm.invoke(prompt).strip()
+        raw = llm.invoke(prompt)
+        token = _normalize_detector_reply(raw)
+        if token.lower() == "stay":
+            return {}
         for loc in location_names:
-            if loc.lower() == result.lower() or loc.lower() in result.lower():
+            if loc.lower() == token.lower():
                 if loc != state["location"]:
                     return {"location": loc}
-                break
+                return {}
+        logger.warning(
+            "Movement: reply did not match any location key (got %r); treating as STAY",
+            token[:120],
+        )
     except Exception as e:
         logger.error(f"Movement node error: {e}")
 
@@ -317,12 +397,15 @@ Current inventory weight: {len(state["inventory"])}/{INVENTORY_WEIGHT_LIMIT} ite
 
 Player said: {state["message"]}
 
-Is the player trying to pick up or take an item? If yes, reply with ONLY the exact item name from the list above. If no, reply with ONLY the word NONE."""
+Is the player trying to pick up or take an item? If yes, reply with ONLY the exact item name from the list above (same spelling). If no, reply with ONLY the word NONE."""
 
     try:
-        result = llm.invoke(prompt).strip()
+        raw = llm.invoke(prompt)
+        token = _normalize_detector_reply(raw)
+        if token.lower() == "none":
+            return {}
         for item in available_items:
-            if item.lower() == result.lower() or item.lower() in result.lower():
+            if item.lower() == token.lower():
                 if len(state["inventory"]) >= INVENTORY_WEIGHT_LIMIT:
                     return {
                         "response": f"Inventory full! You can't carry more than {INVENTORY_WEIGHT_LIMIT} items.",
@@ -341,6 +424,10 @@ Is the player trying to pick up or take an item? If yes, reply with ONLY the exa
                     "locations": updated_locations,
                     "inventory": new_inventory,
                 }
+        logger.warning(
+            "Inventory: reply did not match any item name (got %r); no pickup",
+            token[:120],
+        )
     except Exception as e:
         logger.error(f"Inventory node error: {e}")
 
@@ -370,6 +457,9 @@ def narrator_node(state: State) -> State:
     if just_arrived:
         arrival_hint = f"\nThe player just arrived at {state['location']}. Describe this new location vividly as they enter it.\n"
 
+    engine_brief = _build_narrative_engine_brief(state)
+    engine_block = f"{engine_brief}\n\n" if engine_brief else ""
+
     narrator_prompt = (state["narrator"].get("prompt") or "").strip() or DEFAULT_NARRATOR_PROMPT
     prompt = f"""{narrator_prompt}
 
@@ -379,8 +469,7 @@ Current location: {state["location"]} — {location.get("description", "")}
 Items here: {", ".join(location.get("items") or []) or "none"}
 Player inventory: {", ".join(state["inventory"]) or "empty"}
 Characters here: {", ".join(location.get("characters") or []) or "none"}
-{arrival_hint}
-Recent history:
+{arrival_hint}{engine_block}Recent history:
 {history_text}
 
 Player just said: {state["message"]}
@@ -471,6 +560,7 @@ def npc_node(state: State) -> State:
 
     history_text = "\n".join(state["history"][-6:])
     full_response = state["response"]
+    narrator_beat = (state.get("response") or "").strip()
 
     def get_npc_response(npc_name: str) -> Optional[str]:
         if npc_name not in state["characters"]:
@@ -495,6 +585,9 @@ def npc_node(state: State) -> State:
 
 You are speaking to {player.get("name", "Adventurer")}. {player.get("background", "")}.
 Current mood: {mood_desc}
+
+What the narrator just established in this scene (stay consistent; react naturally):
+{narrator_beat}
 
 Recent history:
 {history_text}
@@ -1668,12 +1761,21 @@ def chat():
             sanitized_message = sanitize_input(message.strip())
             state["message"] = sanitized_message
 
+            loc_key = state["location"]
+            room_now = state["locations"].get(loc_key, {}) or {}
+            state["narrative_turn_snapshot"] = {
+                "location": loc_key,
+                "inventory": list(state.get("inventory") or []),
+                "room_item_names": list(room_now.get("items") or []),
+            }
+
             try:
                 result = chain.invoke(state)
             except Exception as e:
                 logger.error(f"Chain execution error: {e}")
                 return jsonify({"error": f"Internal error: {str(e)}"}), 500
 
+            result.pop("narrative_turn_snapshot", None)
             active_games[session_id] = result
             upsert_save_slot_db(conn, aid, slot, result)
             conn.execute(
