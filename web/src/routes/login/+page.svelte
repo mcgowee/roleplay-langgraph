@@ -83,6 +83,8 @@
   <div class="card">
     <h1>{mode === "login" ? "Log in" : "Create account"}</h1>
 
+    <p class="auth-notice">Accounts here are just to keep track of your adventures — pick any username and a simple password. No email required, no personal info collected. Jump in and play.</p>
+
     {#if err}
       <p class="err">{err}</p>
     {/if}
@@ -188,6 +190,12 @@
   .btn.primary {
     background: #1a73e8;
     border-color: #1a73e8;
+  }
+  .auth-notice {
+    font-size: 0.82rem;
+    color: #9aa0a6;
+    margin: 0 0 1rem;
+    line-height: 1.4;
   }
   .err {
     color: #f28b82;
