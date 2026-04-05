@@ -258,11 +258,18 @@
     <p class="create-blurb">
       Build a custom game from a story outline or paste your own game JSON.
     </p>
-    <div class="create-actions">
-      <a href="/tools/story-draft" class="btn primary link-btn"
+    <div class="create-actions create-actions-primary">
+      <a href="/stories/create" class="btn primary link-btn">Create a Story</a>
+      <a href="/community" class="btn primary link-btn">Browse Community</a>
+    </div>
+    <p class="create-tools-label">More tools</p>
+    <div class="create-actions create-actions-secondary">
+      <a href="/tools/story-draft" class="btn sm link-btn subtle-btn"
         >Story Draft Tool</a
       >
-      <a href="/tools/validate" class="btn link-btn">Validate Game JSON</a>
+      <a href="/tools/validate" class="btn sm link-btn subtle-btn"
+        >Validate JSON</a
+      >
     </div>
   </section>
 </main>
@@ -446,6 +453,30 @@
     display: flex;
     flex-wrap: wrap;
     gap: 0.6rem;
+  }
+  .create-actions-primary .link-btn {
+    padding: 0.55rem 1.1rem;
+    font-size: 0.95rem;
+  }
+  .create-tools-label {
+    margin: 1rem 0 0.4rem;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #9aa0a6;
+  }
+  .create-actions-secondary {
+    gap: 0.45rem;
+  }
+  .subtle-btn {
+    background: transparent;
+    border-color: #3c4043;
+    color: #9aa0a6;
+    font-weight: 500;
+  }
+  .subtle-btn:hover {
+    color: #e8eaed;
+    border-color: #5f6368;
   }
   .link-btn {
     display: inline-block;

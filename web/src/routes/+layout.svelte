@@ -19,6 +19,7 @@
       if (
         !authState.uid &&
         path !== "/login" &&
+        path !== "/community" &&
         !path.startsWith("/tools")
       ) {
         await goto("/login");
@@ -33,6 +34,7 @@
       authState.checked &&
       !authState.uid &&
       $page.url.pathname !== "/login" &&
+      $page.url.pathname !== "/community" &&
       !$page.url.pathname.startsWith("/tools")
   );
 </script>
@@ -52,6 +54,8 @@
         <span class="brand">RPG Engine</span>
         <a href="/">Lobby</a>
         <a href="/play">Play</a>
+        <a href="/community">Community</a>
+        <a href="/stories">My Stories</a>
         <a href="/tools">Tools</a>
       </div>
       <div class="nav-right">

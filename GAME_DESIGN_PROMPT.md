@@ -138,15 +138,13 @@ After all sections are complete, generate the full JSON file and nothing else.
 1. Save the output as a `.json` file in the `games/` folder
 2. Use a lowercase filename with underscores (e.g. `haunted_mansion.json`)
 3. **Validate without running the game** (catches wrong field names, bad references, missing `narrator.prompt`, etc.):
-
-   ```bash
+  ```bash
    python3 scripts/validate_game_json.py games/haunted_mansion.json
    # or every game:
    python3 scripts/validate_game_json.py --all
    # fail CI on warnings too:
    python3 scripts/validate_game_json.py --all --strict
-   ```
-
+  ```
 4. Restart the Flask server or just start a new game — it reads from disk each time
 5. Run `python3 play.py` and your new game will appear in the list
 

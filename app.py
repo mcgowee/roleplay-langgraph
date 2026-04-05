@@ -93,7 +93,8 @@ def normalize_narrator(narrator: Optional[dict]) -> dict:
             "Narrator JSON missing non-empty 'prompt'; using default. Add narrator.prompt in games/*.json."
         )
         n["prompt"] = DEFAULT_NARRATOR_PROMPT
-    n.setdefault("model", DEFAULT_MODEL)
+    if not n.get("model") or n["model"] == "default":
+        n["model"] = DEFAULT_MODEL
     return n
 
 
@@ -110,7 +111,8 @@ def normalize_characters(characters: Optional[dict]) -> dict:
             c["prompt"] = (
                 f"You are {label}. Stay in character. Reply in one or two short sentences."
             )
-        c.setdefault("model", DEFAULT_MODEL)
+        if not c.get("model") or c["model"] == "default":
+            c["model"] = DEFAULT_MODEL
         c.setdefault("mood", 5)
         if not c.get("mood_descriptions"):
             c["mood_descriptions"] = {str(i): f"Mood {i}/10." for i in range(1, 11)}
@@ -984,6 +986,39 @@ def list_my_game_content():
     return jsonify({"stories": stories})
 
 
+@app.route("/game-content/<int:story_id>", methods=["GET"])
+@login_required
+def get_game_content(story_id: int):
+    conn = get_db()
+    try:
+        row = conn.execute(
+            """
+            SELECT gc.*, u.uid as original_author_name
+            FROM game_content gc
+            LEFT JOIN users u ON gc.original_author_id = u.id
+            WHERE gc.id = ? AND gc.user_id = ?
+            """,
+            (story_id, g.user_id),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return jsonify({"error": "Story not found"}), 404
+    return jsonify({
+        "id": row["id"],
+        "title": row["title"],
+        "description": row["description"],
+        "genre": row["genre"],
+        "game_json": row["game_json"],
+        "is_public": bool(row["is_public"]),
+        "source_id": row["source_id"],
+        "play_count": row["play_count"],
+        "original_author": row["original_author_name"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    })
+
+
 @app.route("/game-content", methods=["POST"])
 @login_required
 def create_game_content():
@@ -1193,6 +1228,114 @@ def browse_community():
         for r in rows
     ]
     return jsonify({"stories": stories})
+
+
+def _llm_result_to_text(result) -> str:
+    if isinstance(result, str):
+        return result
+    content = getattr(result, "content", result)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                t = block.get("text")
+                if isinstance(t, str):
+                    parts.append(t)
+        return "".join(parts)
+    return str(content)
+
+
+def _strip_markdown_json_fences(text: str) -> str:
+    s = text.strip()
+    if not s.startswith("```"):
+        return s
+    s = s[3:]
+    if s.lower().startswith("json"):
+        s = s[4:].lstrip()
+    if s.startswith("\n"):
+        s = s[1:]
+    else:
+        idx = s.find("\n")
+        if idx >= 0:
+            s = s[idx + 1 :]
+    fence = s.rfind("```")
+    if fence >= 0:
+        s = s[:fence]
+    return s.strip()
+
+
+@app.route("/generate-story", methods=["POST"])
+@login_required
+def generate_story():
+    data = request.get_json(silent=True) or {}
+    concept = (data.get("concept") or "").strip()
+    if not concept:
+        return jsonify({"error": "concept is required"}), 400
+    if len(concept) > 5000:
+        return jsonify({"error": "concept must be at most 5000 characters"}), 400
+
+    prompt = f"""You are a game designer for a parser-style text RPG (second-person, "you").
+
+The user described this story idea:
+---
+{concept}
+---
+
+Output a single JSON object (no markdown, no code fences, no commentary) with this exact structure and field types:
+
+- title: string
+- opening: string (second person, present tense; first thing the player reads)
+- description: string (short catalog pitch, 1-2 sentences)
+- genre: one of mystery, thriller, drama, comedy, sci-fi, horror, fantasy
+- narrator_prompt: string (voice/style for the narrator; end beats with "What do you do?" where appropriate)
+- player_name: string
+- player_background: string
+- player_traits: array of short strings (e.g. ["cautious", "witty"])
+- locations: array of 1 to 3 objects, each with:
+  - key: string (snake_case, e.g. "hotel_lobby")
+  - description: string (room/area description)
+  - items: array of strings (can be empty)
+- characters: array of 1 to 3 objects, each with:
+  - key: string (snake_case NPC id)
+  - personality: string (instructions for the NPC voice)
+  - first_line: string (first spoken line)
+  - mood: integer 1-10
+  - location: string (must exactly match one locations[].key)
+
+Ensure every character's location matches a location key. Use consistent snake_case keys.
+Respond with ONLY valid JSON."""
+
+    text = ""
+    try:
+        llm = get_llm(DEFAULT_MODEL)
+        raw = llm.invoke(prompt)
+        text = _llm_result_to_text(raw)
+        cleaned = _strip_markdown_json_fences(text)
+        story = json.loads(cleaned)
+    except json.JSONDecodeError as e:
+        logger.warning(
+            "generate-story invalid JSON: %s | snippet=%s",
+            e,
+            (text or "")[:200],
+        )
+        return jsonify(
+            {
+                "error": "The model did not return valid JSON. Try again or shorten your idea.",
+                "detail": str(e),
+            }
+        ), 422
+    except Exception as e:
+        logger.exception("generate-story failed")
+        return jsonify({"error": str(e)}), 500
+
+    if not isinstance(story, dict):
+        return jsonify({"error": "AI response was not a JSON object"}), 422
+
+    return jsonify({"story": story})
 
 
 # --- Gameplay (adventure-scoped) ---
