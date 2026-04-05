@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { goto } from "$app/navigation";
+  import { authState } from "$lib/auth.svelte";
 
   type CommunityStory = {
     id: number;
@@ -12,6 +13,7 @@
     original_author: string;
     is_global: boolean;
     created_at: string;
+    graph_type?: string;
   };
 
   let stories = $state<CommunityStory[]>([]);
@@ -32,6 +34,18 @@
     ]);
     if (!allowed.has(g)) return "genre-pill genre-unknown";
     return `genre-pill genre-${g.replace(/\s+/g, "-")}`;
+  }
+
+  /** Title-case graph_type for display (e.g. social → Social). */
+  function formatGraphTypeLabel(raw: string): string {
+    return raw
+      .trim()
+      .split(/[_\s]+/)
+      .filter(Boolean)
+      .map(
+        (w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()
+      )
+      .join(" ");
   }
 
   function authorLine(s: CommunityStory): string {
@@ -103,6 +117,17 @@
     <p class="sub">
       Browse stories created and shared by the community. Sign in to play.
     </p>
+    {#if authState.checked && authState.uid}
+      <p class="helper-text">
+        You can also remix any story — play it, then visit My Stories to make
+        your own version.
+      </p>
+    {/if}
+    <p class="helper-text">
+      Stories marked <strong>Social</strong> focus on dialogue and milestone
+      progression. Unmarked stories are <strong>standard</strong> adventures with
+      exploration and inventory.
+    </p>
   </header>
 
   {#if loadError}
@@ -119,9 +144,16 @@
     <div class="catalog-grid">
       {#each stories as s (s.id)}
         <article class="story-card">
-          <span class={genrePillClass(s.genre)}>
-            {(s.genre ?? "").trim().replace(/-/g, " ") || "story"}
-          </span>
+          <div class="card-pills">
+            <span class={genrePillClass(s.genre)}>
+              {(s.genre ?? "").trim().replace(/-/g, " ") || "story"}
+            </span>
+            {#if s.graph_type && s.graph_type.toLowerCase() !== "standard"}
+              <span class="graph-type-badge"
+                >{formatGraphTypeLabel(s.graph_type)}</span
+              >
+            {/if}
+          </div>
           <h2 class="card-title">{s.title}</h2>
           <p class="card-desc">
             {(s.description ?? "").trim() ||
@@ -166,6 +198,16 @@
     font-size: 0.9rem;
     line-height: 1.5;
   }
+  .helper-text {
+    margin: 0.5rem 0 0;
+    color: #9aa0a6;
+    font-size: 0.82rem;
+    line-height: 1.45;
+  }
+  .helper-text strong {
+    color: #bdc1c6;
+    font-weight: 600;
+  }
   .panel {
     padding: 1.25rem;
     background: #1a1d23;
@@ -187,6 +229,26 @@
     border-radius: 10px;
     padding: 1rem 1.1rem 1.1rem;
     min-height: 11rem;
+  }
+  .card-pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    align-items: center;
+    margin-bottom: 0.55rem;
+  }
+  .card-pills .genre-pill {
+    margin-bottom: 0;
+  }
+  .graph-type-badge {
+    display: inline-block;
+    padding: 0.2rem 0.6rem;
+    border-radius: 12px;
+    font-size: 0.68rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    background: #1a3a3a;
+    color: #4dd0e1;
   }
   .genre-pill {
     display: inline-block;

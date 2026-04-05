@@ -24,15 +24,20 @@
 
 <section class="panel">
   <h2>Feedback report</h2>
-  <p class="hint">
-    Reads <code>logs/feedback/*.jsonl</code> via <code>scripts/feedback_report.py</code>.
+  <p class="helper-text">
+    View notes and feedback that players have left during play sessions.
   </p>
   <label class="row">
     <input type="checkbox" bind:checked={feedbackBrief} /> Brief (copy-paste friendly)
   </label>
   <label class="row">
-    Filter by game file stem (optional)
-    <input type="text" class="inp" placeholder="warehouse" bind:value={feedbackGame} />
+    Filter by story name (optional)
+    <input
+      type="text"
+      class="inp"
+      placeholder="e.g. mayas_match"
+      bind:value={feedbackGame}
+    />
   </label>
   <button
     type="button"

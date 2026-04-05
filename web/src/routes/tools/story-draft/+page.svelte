@@ -63,13 +63,15 @@
 </script>
 
 <section class="panel">
-  <h2>Story → draft JSON (Ollama)</h2>
-  <p class="hint">
-    Runs <code>scripts/story_to_game_draft.py</code> with a temp file (can take several minutes).
-    Then download JSON or open the <a href="/tools/validate">validator</a> with this draft.
+  <h2>AI Story Generator</h2>
+  <p class="helper-text">
+    Paste a story outline or concept below. The AI will generate locations,
+    characters, and game structure from it. This usually takes 2-5 minutes.
+    When it&apos;s done, download the JSON or send it to the
+    <a href="/tools/validate">validator</a>.
   </p>
   <label class="row block">
-    Model (optional, else server default from <code>config.py</code>)
+    AI model (optional — leave blank for the default)
     <input
       type="text"
       class="inp wide"
@@ -85,7 +87,7 @@
   ></textarea>
   <div class="row-actions">
     <button type="button" class="btn primary" disabled={storyBusy} onclick={runStoryDraft}>
-      {storyBusy ? "Calling Ollama…" : "Generate draft"}
+      {storyBusy ? "Generating… this may take a few minutes" : "Generate draft"}
     </button>
     {#if storyResult?.gameJson}
       <button type="button" class="btn" onclick={downloadDraft}>Download JSON</button>
@@ -93,9 +95,14 @@
     {/if}
   </div>
   {#if storyResult?.stderr}
+    <p class="helper-text stderr-intro">Processing log from the AI service:</p>
     <pre class="out notes">{storyResult.stderr}</pre>
   {/if}
   {#if storyResult && !storyResult.ok && storyResult.rawStdout}
-    <pre class="out bad">Raw output (parse failed):\n{storyResult.rawStdout}</pre>
+    <p class="helper-text stdout-intro">
+      The AI returned text that couldn&apos;t be converted to game JSON. You can try
+      again or copy this output and manually format it:
+    </p>
+    <pre class="out bad">{storyResult.rawStdout}</pre>
   {/if}
 </section>

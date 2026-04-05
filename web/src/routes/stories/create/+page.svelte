@@ -33,6 +33,9 @@
   let title = $state("");
   let description = $state("");
   let genre = $state("");
+  let graphType = $state("standard");
+  let guideName = $state("");
+  let milestonesText = $state("");
   let gameJson = $state("");
   let clientMsg = $state<string | null>(null);
   let clientOk = $state(false);
@@ -176,6 +179,7 @@
       opening: opening.trim(),
       description: description.trim(),
       genre: genre,
+      graph_type: graphType,
       narrator: {
         model: "default",
         prompt: narratorPrompt,
@@ -200,6 +204,13 @@
         trigger_words: {},
       },
     };
+    if (graphType === "social") {
+      out.guide = guideName.trim();
+      out.milestones = milestonesText
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean);
+    }
     mergeAiExtrasIntoGameJson(out);
     return out;
   }
@@ -213,6 +224,16 @@
       .trim()
       .toLowerCase();
     genre = GENRES.includes(g as (typeof GENRES)[number]) ? g : "";
+    {
+      const gt = String(story.graph_type ?? "standard").trim().toLowerCase();
+      graphType = gt === "social" ? "social" : "standard";
+    }
+    guideName = String(story.guide ?? "");
+    milestonesText = Array.isArray(story.milestones)
+      ? story.milestones
+          .map((x) => String(x).trim())
+          .join("\n")
+      : "";
     narratorStyle = String(story.narrator_prompt ?? "").trim();
     playerName = String(story.player_name ?? "").trim();
     playerBackground = String(story.player_background ?? "").trim();
@@ -482,6 +503,10 @@
     {#if createTab === "build"}
       <div class="ai-panel">
         <h3 class="ai-panel-title">Generate from an idea</h3>
+        <p class="helper-text">
+          Describe your story concept in a few sentences and the AI will
+          generate a starting game. You can edit everything afterward.
+        </p>
         <textarea
           class="ai-concept-input"
           rows="4"
@@ -582,6 +607,45 @@
             </select>
           </label>
           <label class="form-field">
+            Story Type
+            <select bind:value={graphType}>
+              <option value="standard">Standard</option>
+              <option value="social">Social</option>
+            </select>
+            <span class="field-hint"
+              ><strong>Standard</strong> = Exploration with items and NPC moods.
+              <strong>Social</strong> = Dialogue-focused with milestones and a guide
+              NPC.</span
+            >
+          </label>
+          {#if graphType === "social"}
+            <label class="form-field">
+              Guide NPC key
+              <input
+                type="text"
+                bind:value={guideName}
+                placeholder="maya"
+                autocomplete="off"
+              />
+              <span class="field-hint"
+                >The NPC key (from your characters) that follows the player
+                everywhere. Use lowercase_with_underscores.</span
+              >
+            </label>
+            <label class="form-field">
+              Milestones (one per line)
+              <textarea
+                rows="4"
+                bind:value={milestonesText}
+                placeholder={"Ask Sam on a date\nHold hands with Sam"}
+              ></textarea>
+              <span class="field-hint"
+                >Ordered goals the player must complete. The game won&apos;t allow a
+                WIN until all are done.</span
+              >
+            </label>
+          {/if}
+          <label class="form-field">
             <span class="field-label-row">
               <span class="field-label-text">Narrator style</span>
               <FieldAiAssist
@@ -600,6 +664,10 @@
 
         <section class="form-section">
           <h3 class="form-section-label">Your character</h3>
+          <p class="helper-text">
+            This is the player&apos;s character — who they are in the story
+            world.
+          </p>
           <label class="form-field">
             Name
             <input
@@ -637,6 +705,9 @@
 
         <section class="form-section">
           <h3 class="form-section-label">Starting location</h3>
+          <p class="helper-text">
+            The first place the player finds themselves when the story begins.
+          </p>
           <label class="form-field">
             Location name <span class="req">*</span>
             <input
@@ -687,6 +758,10 @@
             First character (optional)
           </button>
           {#if charSectionOpen}
+            <p class="helper-text">
+              An NPC the player can talk to in the starting location. You can add
+              more characters later by editing the JSON.
+            </p>
             <label class="form-field">
               Character name
               <input
@@ -728,15 +803,18 @@
                 autocomplete="off"
               />
             </label>
-            <label class="form-field">
-              Starting mood
-              <input
-                type="number"
-                min="1"
-                max="10"
-                bind:value={characterMood}
-              />
-            </label>
+            {#if graphType === "standard"}
+              <label class="form-field">
+                Starting mood
+                <input
+                  type="number"
+                  min="1"
+                  max="10"
+                  bind:value={characterMood}
+                  title="1 = hostile, 5 = neutral, 10 = friendly. NPC mood shifts as the player interacts with them."
+                />
+              </label>
+            {/if}
           {/if}
         </section>
 
@@ -795,6 +873,11 @@
             {/each}
           </select>
         </label>
+
+        <p class="helper-text json-tab-hint">
+          Paste a complete game JSON document. This gives you full control over
+          locations, characters, rules, and all game settings.
+        </p>
 
         <label class="field">
           Game JSON <span class="req">*</span>
@@ -906,10 +989,25 @@
     margin-bottom: 1.25rem;
   }
   .ai-panel-title {
-    margin: 0 0 0.65rem;
+    margin: 0 0 0.35rem;
     font-size: 0.85rem;
     font-weight: 600;
     color: #e8eaed;
+  }
+  .helper-text {
+    margin: 0 0 0.55rem;
+    color: #9aa0a6;
+    font-size: 0.82rem;
+    line-height: 1.45;
+  }
+  .ai-panel .helper-text {
+    margin-bottom: 0.65rem;
+  }
+  .form-section .helper-text {
+    margin: 0 0 0.65rem;
+  }
+  .json-tab-hint {
+    margin: 0 0 0.85rem;
   }
   .ai-concept-input {
     display: block;

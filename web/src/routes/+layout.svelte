@@ -61,11 +61,11 @@
     <nav class="site-nav">
       <div class="nav-left">
         <span class="brand">RPG Engine</span>
-        <a href="/">Lobby</a>
-        <a href="/play">Play</a>
-        <a href="/community">Community</a>
-        <a href="/stories">My Stories</a>
-        <a href="/tools">Tools</a>
+        <a href="/" title="Browse stories and resume your adventures">Lobby</a>
+        <a href="/play" title="Your active game session">Play</a>
+        <a href="/community" title="Stories shared by other players">Community</a>
+        <a href="/stories" title="Stories you've created or remixed">My Stories</a>
+        <a href="/tools" title="JSON validator, story drafting, and feedback">Tools</a>
       </div>
       <div class="nav-right">
         <span class="who">{authState.uid}</span>
@@ -76,9 +76,9 @@
     <nav class="site-nav guest">
       <div class="nav-left">
         <span class="brand">RPG Engine</span>
-        <a href="/">Lobby</a>
-        <a href="/community">Community</a>
-        <a href="/tools">Tools</a>
+        <a href="/" title="Browse stories and resume your adventures">Lobby</a>
+        <a href="/community" title="Stories shared by other players">Community</a>
+        <a href="/tools" title="JSON validator, story drafting, and feedback">Tools</a>
       </div>
       <div class="nav-right">
         <a href="/login" class="login-link">Log in</a>

@@ -42,6 +42,10 @@
   let title = $state("");
   let description = $state("");
   let genre = $state("");
+  let graphType = $state("standard");
+  /** From last loaded JSON; edit JSON to change — not live-synced while typing. */
+  let socialGuideDisplay = $state("");
+  let socialMilestonesLines = $state<string[]>([]);
   let gameJson = $state("");
   let clientMsg = $state<string | null>(null);
   let clientOk = $state(false);
@@ -88,6 +92,21 @@
       };
     }
     return { ok: true, parsed: o };
+  }
+
+  function applyGraphContextFromParsed(parsed: Record<string, unknown>) {
+    const raw = String(parsed.graph_type ?? "standard").trim().toLowerCase();
+    graphType = raw === "social" ? "social" : "standard";
+    if (graphType === "social") {
+      socialGuideDisplay = String(parsed.guide ?? "").trim();
+      const m = parsed.milestones;
+      socialMilestonesLines = Array.isArray(m)
+        ? (m as unknown[]).map((x) => String(x).trim()).filter(Boolean)
+        : [];
+    } else {
+      socialGuideDisplay = "";
+      socialMilestonesLines = [];
+    }
   }
 
   function validate() {
@@ -142,12 +161,20 @@
       genre = (s.genre ?? "").trim();
       if (s.game_json) {
         try {
-          gameJson = JSON.stringify(JSON.parse(s.game_json), null, 2);
+          const parsed = JSON.parse(s.game_json) as Record<string, unknown>;
+          gameJson = JSON.stringify(parsed, null, 2);
+          applyGraphContextFromParsed(parsed);
         } catch {
           gameJson = s.game_json;
+          graphType = "standard";
+          socialGuideDisplay = "";
+          socialMilestonesLines = [];
         }
       } else {
         gameJson = "";
+        graphType = "standard";
+        socialGuideDisplay = "";
+        socialMilestonesLines = [];
       }
     } catch {
       serverError = "Network error";
@@ -273,6 +300,48 @@
         </select>
       </label>
 
+      <div class="field graph-meta-block">
+        <span class="graph-meta-label">Story type</span>
+        <div class="graph-meta-row">
+          <span
+            class="story-type-badge"
+            class:story-type-social={graphType === "social"}
+            >{graphType === "social" ? "Social" : "Standard"}</span
+          >
+        </div>
+        <p class="graph-meta-hint">
+          Shown from JSON as loaded. To change type or social fields, edit
+          <code>graph_type</code>, <code>guide</code>, and
+          <code>milestones</code> in the textarea below, then save.
+        </p>
+        {#if graphType === "social"}
+          <div class="social-readonly-summary">
+            <p class="social-summary-line">
+              <span class="social-summary-k">Guide NPC</span>
+              <span class="social-summary-v"
+                >{socialGuideDisplay || "—"}</span
+              >
+            </p>
+            <p class="social-summary-k social-milestones-heading">Milestones</p>
+            {#if socialMilestonesLines.length === 0}
+              <p class="social-summary-empty">None in JSON</p>
+            {:else}
+              <ol class="social-milestones-list">
+                {#each socialMilestonesLines as line, i (i)}
+                  <li>{line}</li>
+                {/each}
+              </ol>
+            {/if}
+          </div>
+        {/if}
+      </div>
+
+      <p class="helper-text">
+        Paste a full game JSON to replace the current story data, or leave empty
+        to keep what&apos;s already saved. Validate before saving to catch
+        formatting errors.
+      </p>
+
       <label class="field">
         Game JSON <span class="req">*</span>
         <textarea
@@ -340,6 +409,101 @@
     margin-bottom: 1rem;
     font-size: 0.85rem;
     color: #9aa0a6;
+  }
+
+  .helper-text {
+    margin: 0 0 0.85rem;
+    color: #9aa0a6;
+    font-size: 0.82rem;
+    line-height: 1.45;
+  }
+
+  .graph-meta-block {
+    margin-bottom: 1rem;
+  }
+  .graph-meta-label {
+    display: block;
+    font-size: 0.85rem;
+    color: #9aa0a6;
+    margin-bottom: 0.35rem;
+  }
+  .graph-meta-row {
+    margin-top: 0.25rem;
+  }
+  .story-type-badge {
+    display: inline-block;
+    padding: 0.25rem 0.65rem;
+    border-radius: 999px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    background: #2a2f38;
+    color: #bdc1c6;
+  }
+  .story-type-badge.story-type-social {
+    background: #1a3a3a;
+    color: #4dd0e1;
+  }
+  .graph-meta-hint {
+    margin: 0.5rem 0 0;
+    font-size: 0.75rem;
+    line-height: 1.45;
+    color: #80868b;
+  }
+  .graph-meta-hint code {
+    font-size: 0.72rem;
+    padding: 0.05rem 0.25rem;
+    border-radius: 4px;
+    background: #0f1114;
+    color: #bdc1c6;
+  }
+  .social-readonly-summary {
+    margin-top: 0.75rem;
+    padding: 0.65rem 0.75rem;
+    border-radius: 8px;
+    border: 1px solid #2a2f38;
+    background: rgba(255, 255, 255, 0.03);
+  }
+  .social-summary-line {
+    margin: 0 0 0.5rem;
+    font-size: 0.82rem;
+    line-height: 1.4;
+    color: #bdc1c6;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem 0.6rem;
+    align-items: baseline;
+  }
+  .social-summary-k {
+    font-weight: 600;
+    color: #9aa0a6;
+    min-width: 5.5rem;
+  }
+  .social-summary-v {
+    color: #e8eaed;
+    word-break: break-word;
+  }
+  .social-milestones-heading {
+    margin: 0.35rem 0 0.35rem;
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .social-summary-empty {
+    margin: 0;
+    font-size: 0.8rem;
+    color: #80868b;
+    font-style: italic;
+  }
+  .social-milestones-list {
+    margin: 0;
+    padding-left: 1.15rem;
+    font-size: 0.8rem;
+    line-height: 1.45;
+    color: #bdc1c6;
+  }
+  .social-milestones-list li {
+    margin-bottom: 0.2rem;
   }
   .req {
     color: #f28b82;

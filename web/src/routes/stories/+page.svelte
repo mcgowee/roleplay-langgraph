@@ -13,6 +13,7 @@
     original_author: string | null;
     created_at: string;
     updated_at: string;
+    graph_type?: string;
   };
 
   let stories = $state<MyStory[]>([]);
@@ -167,6 +168,10 @@
       <a href="/tools/story-draft">story draft tool</a>
       or review the game design prompt in the project repo.
     </p>
+    <p class="helper-text">
+      Everything here is yours to play, tweak, or publish. Public stories show up
+      on Community; private ones stay on your account only.
+    </p>
   </header>
 
   {#if loadError}
@@ -198,6 +203,9 @@
             {(s.description ?? "").trim() || "No description yet."}
           </p>
           <div class="badges-row">
+            <span class="graph-pill"
+              >{(s.graph_type ?? "standard").replace(/_/g, " ")}</span
+            >
             <span class:is-public={s.is_public} class="vis-badge">
               {s.is_public ? "Public" : "Private"}
             </span>
@@ -234,6 +242,9 @@
               type="button"
               class="btn"
               disabled={busy}
+              title={s.is_public
+                ? "Remove from the Community page — only you can play it"
+                : "Make this story visible on the Community page for anyone to play"}
               onclick={() => togglePublish(s.id)}
             >
               {s.is_public ? "Unpublish" : "Publish"}
@@ -242,6 +253,7 @@
               type="button"
               class="btn danger sm"
               disabled={busy}
+              title="Permanently delete this story. This cannot be undone."
               onclick={() => deleteStory(s)}
             >
               Delete
@@ -285,6 +297,12 @@
   }
   .sub a {
     color: #8ab4f8;
+  }
+  .helper-text {
+    margin: 0.5rem 0 0;
+    color: #9aa0a6;
+    font-size: 0.82rem;
+    line-height: 1.45;
   }
   .panel {
     padding: 1.25rem;
@@ -366,6 +384,16 @@
     -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
     overflow: hidden;
+  }
+  .graph-pill {
+    display: inline-block;
+    padding: 0.2rem 0.6rem;
+    border-radius: 12px;
+    font-size: 0.68rem;
+    font-weight: 500;
+    letter-spacing: 0.03em;
+    background: #30343d;
+    color: #bdc1c6;
   }
   .badges-row {
     display: flex;

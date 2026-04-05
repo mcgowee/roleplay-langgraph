@@ -26,7 +26,9 @@
   let sending = $state(false);
 
   let sidebarOpen = $state(true);
-  let sidebarTab = $state<"actions" | "saves" | "feedback">("actions");
+  let sidebarTab = $state<"status" | "actions" | "saves" | "feedback">(
+    "status"
+  );
 
   let statusLoading = $state(false);
   let statusData = $state<Record<string, unknown> | null>(null);
@@ -51,6 +53,52 @@
   let logEl: HTMLDivElement | undefined = $state();
 
   const slotIndices = Array.from({ length: SAVE_SLOT_COUNT }, (_, i) => i);
+
+  const friendlyStatusLabels: Record<string, string> = {
+    inventory: "Inventory",
+    inventory_weight: "Carrying",
+    moods: "NPC Moods",
+    turns: "Turns Played",
+    location: "Current Location",
+    paused: "Game Paused",
+    milestones: "Milestones",
+    milestone_progress: "Milestone Progress",
+    current_milestone: "Current Goal",
+    graph_type: "Story Type",
+    models: "AI Models",
+    save_slots: "Save Slots",
+  };
+
+  function friendlyStatusKey(k: string): string {
+    return friendlyStatusLabels[k] ?? k.replace(/_/g, " ");
+  }
+
+  /** Title-case graph_type for sidebar (e.g. social → Social). */
+  function friendlyGraphTypeLabel(raw: string): string {
+    return raw
+      .trim()
+      .split(/[_\s]+/)
+      .filter(Boolean)
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+      .join(" ");
+  }
+
+  /** Compact line for a save slot from /api/list_slots, or null if shape is unknown. */
+  function saveSlotSummaryLine(s: unknown): string | null {
+    if (!s || typeof s !== "object") return null;
+    const o = s as Record<string, unknown>;
+    if (typeof o.slot !== "number") return null;
+    const turns =
+      typeof o.turn_count === "number"
+        ? o.turn_count
+        : typeof o.turns === "number"
+          ? o.turns
+          : "?";
+    const locRaw =
+      typeof o.location === "string" && o.location.trim() ? o.location : null;
+    const loc = locRaw ? locRaw.replace(/_/g, " ") : "unknown";
+    return `Slot ${o.slot}: Turn ${turns}, at ${loc}`;
+  }
 
   function historyToMessages(history: string[]): PlayMessage[] {
     const out: PlayMessage[] = [];
@@ -161,6 +209,7 @@
         milestones?: string[];
         milestone_progress?: number;
         current_milestone?: string | null;
+        graph_type?: string;
       };
       if (typeof d.turns === "number") {
         turnCount = d.turns;
@@ -185,6 +234,9 @@
           ...(typeof d.location === "string" ? { location: d.location } : {}),
           ...(d.moods && typeof d.moods === "object" ? { moods: d.moods } : {}),
           ...(inv ? { inventory: inv } : {}),
+          ...(typeof d.graph_type === "string"
+            ? { graph_type: d.graph_type }
+            : {}),
         };
         if (inv) {
           const iw = String(
@@ -520,27 +572,20 @@
           {adventureName ?? gameFile ?? "Adventure"}
         </h2>
         <p class="sidebar-meta">
-          Slot {slot} · Turn {turnCount} · Adventure #{adventureId}
+          Save {slot} · Turn {turnCount} · Adventure #{adventureId}{#if statusData != null && typeof statusData.graph_type === "string"}
+            · Type: <span class="graph-inline">{friendlyGraphTypeLabel(statusData.graph_type)}</span>{/if}
         </p>
         {#if currentLocation}
           <p class="sidebar-location">{currentLocation.replace(/_/g, " ")}</p>
         {/if}
-        {#if milestones.length > 0}
-          <div class="sidebar-milestones">
-            <p class="milestones-label">Milestones</p>
-            <ul class="milestones-list">
-              {#each milestones as ms, i}
-                <li class="milestone-item" class:completed={i < milestoneProgress} class:current={i === milestoneProgress}>
-                  <span class="milestone-icon">{i < milestoneProgress ? "\u2713" : i === milestoneProgress ? "\u25B6" : "\u25CB"}</span>
-                  {ms}
-                </li>
-              {/each}
-            </ul>
-          </div>
-        {/if}
       </div>
 
       <nav class="sidebar-tabs">
+        <button
+          class="tab-btn"
+          class:active={sidebarTab === "status"}
+          onclick={() => (sidebarTab = "status")}
+        >Status</button>
         <button
           class="tab-btn"
           class:active={sidebarTab === "actions"}
@@ -562,38 +607,107 @@
       </nav>
 
       <div class="sidebar-body">
-        {#if sidebarTab === "actions"}
+        {#if sidebarTab === "status"}
+          <div class="status-block">
+            <h3 class="section-label section-label-tight">Game status</h3>
+            <p class="muted status-tab-hint">
+              Milestones and raw fields from the server. Use
+              <strong>Actions</strong> → Refresh status to update.
+            </p>
+
+            {#if milestones.length > 0}
+              <div class="sidebar-milestones status-tab-milestones">
+                <p class="milestones-label">Milestones</p>
+                <ul class="milestones-list">
+                  {#each milestones as ms, i}
+                    <li
+                      class="milestone-item"
+                      class:completed={i < milestoneProgress}
+                      class:current={i === milestoneProgress}
+                    >
+                      <span class="milestone-icon"
+                        >{i < milestoneProgress
+                          ? "\u2713"
+                          : i === milestoneProgress
+                            ? "\u25B6"
+                            : "\u25CB"}</span
+                      >
+                      {ms}
+                    </li>
+                  {/each}
+                </ul>
+              </div>
+            {/if}
+
+            {#if statusData}
+              <details class="status-json-details">
+                <summary class="status-json-summary"
+                  >Raw server state (all fields)</summary
+                >
+                <div class="status-json-inner">
+                  <p class="helper-text">
+                    Live game state from the server. Use Refresh Status to update.
+                  </p>
+                  <dl class="status-dl">
+                    {#each Object.entries(statusData) as [k, v] (k)}
+                      <dt>{friendlyStatusKey(k)}</dt>
+                      <dd>
+                        <pre>{typeof v === "object"
+                          ? JSON.stringify(v, null, 2)
+                          : String(v)}</pre>
+                      </dd>
+                    {/each}
+                  </dl>
+                </div>
+              </details>
+            {:else}
+              <p class="muted status-tab-hint">
+                No status loaded yet. Open <strong>Actions</strong> and use
+                Refresh status.
+              </p>
+            {/if}
+          </div>
+        {:else if sidebarTab === "actions"}
+          <p class="helper-text">
+            Manage your session. Save your progress, refresh the game state, or
+            pause to come back later.
+          </p>
           <div class="action-group">
-            <button class="btn sidebar-btn" onclick={saveNow}>Save now</button>
+            <button
+              class="btn sidebar-btn"
+              title="Save your current progress to the active slot"
+              onclick={saveNow}
+            >Save now</button>
             <button
               class="btn sidebar-btn"
               disabled={statusLoading}
+              title="Fetch the latest game state from the server"
               onclick={refreshStatus}
             >
               {statusLoading ? "Loading…" : "Refresh status"}
             </button>
-            <button class="btn sidebar-btn" onclick={togglePause}>
+            <button
+              class="btn sidebar-btn"
+              onclick={togglePause}
+              title={paused
+                ? "Unpause so the game processes your messages again"
+                : "Pause the game — your messages won't be processed until you resume"}
+            >
               {paused ? "Resume game" : "Pause game"}
             </button>
-            <button class="btn sidebar-btn danger" onclick={clearSession}>
+            <button
+              class="btn sidebar-btn danger"
+              title="Returns to the lobby. Your progress is auto-saved."
+              onclick={clearSession}
+            >
               End session
             </button>
           </div>
-
-          {#if statusData}
-            <div class="status-block">
-              <h3 class="section-label">Game status</h3>
-              <dl class="status-dl">
-                {#each Object.entries(statusData) as [k, v] (k)}
-                  <dt>{k}</dt>
-                  <dd>
-                    <pre>{typeof v === "object" ? JSON.stringify(v, null, 2) : String(v)}</pre>
-                  </dd>
-                {/each}
-              </dl>
-            </div>
-          {/if}
         {:else if sidebarTab === "saves"}
+          <p class="helper-text">
+            You have multiple save slots. Load a previous save to rewind, or
+            delete ones you no longer need.
+          </p>
           <div class="action-group">
             <div class="save-row">
               <label class="field-label">
@@ -616,7 +730,11 @@
                   {/each}
                 </select>
               </label>
-              <button class="btn sm danger" onclick={deleteSaveSlot}>Delete</button>
+              <button
+                class="btn sm danger"
+                title="Permanently delete this save slot"
+                onclick={deleteSaveSlot}
+              >Delete</button>
             </div>
           </div>
 
@@ -629,12 +747,24 @@
                 <p class="muted">No saves yet.</p>
               {:else}
                 {#each slotsData.slots ?? [] as s}
-                  <pre class="slot-json">{JSON.stringify(s, null, 2)}</pre>
+                  {@const slotLine = saveSlotSummaryLine(s)}
+                  {#if slotLine}
+                    <p class="slot-summary">{slotLine}</p>
+                  {:else}
+                    <details class="slot-details">
+                      <summary>Slot data</summary>
+                      <pre class="slot-json">{JSON.stringify(s, null, 2)}</pre>
+                    </details>
+                  {/if}
                 {/each}
               {/if}
             </div>
           {/if}
         {:else if sidebarTab === "feedback"}
+          <p class="helper-text">
+            Leave notes for the developer about what worked, what was
+            confusing, or ideas you have. These are stored with your adventure.
+          </p>
           <div class="action-group">
             <label class="field-label">
               Category
@@ -696,7 +826,7 @@
       <div class="composer">
         <textarea
           rows="2"
-          placeholder="What do you do?"
+          placeholder="What do you do? (press Enter to send)"
           bind:value={input}
           onkeydown={onKeydown}
           disabled={sending}
@@ -769,6 +899,10 @@
     font-size: 0.75rem;
     color: #9aa0a6;
   }
+  .graph-inline {
+    color: #bdc1c6;
+    font-weight: 500;
+  }
   .sidebar-location {
     margin: 0.35rem 0 0;
     font-size: 0.8rem;
@@ -782,6 +916,11 @@
     padding: 0.5rem 0.6rem;
     background: rgba(255, 255, 255, 0.04);
     border-radius: 6px;
+  }
+
+  .status-tab-milestones {
+    margin-top: 0;
+    margin-bottom: 0.75rem;
   }
 
   .milestones-label {
@@ -849,6 +988,13 @@
     padding: 0.75rem 1rem;
   }
 
+  .helper-text {
+    margin: 0 0 0.55rem;
+    color: #9aa0a6;
+    font-size: 0.82rem;
+    line-height: 1.45;
+  }
+
   .action-group {
     display: flex;
     flex-direction: column;
@@ -869,6 +1015,10 @@
     color: #9aa0a6;
   }
 
+  .section-label-tight {
+    margin-top: 0;
+  }
+
   .save-row {
     display: flex;
     align-items: flex-end;
@@ -882,8 +1032,47 @@
   }
 
   .status-block {
-    margin-top: 0.5rem;
+    margin-top: 0;
   }
+  .status-tab-hint {
+    margin: 0 0 0.5rem;
+    font-size: 0.72rem;
+    line-height: 1.4;
+  }
+
+  .status-json-details {
+    margin-top: 0.25rem;
+    border: 1px solid #2a2f38;
+    border-radius: 8px;
+    overflow: hidden;
+    background: #0f1114;
+  }
+
+  .status-json-summary {
+    cursor: pointer;
+    padding: 0.55rem 0.65rem;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: #bdc1c6;
+    background: #1a1d23;
+    list-style: none;
+    user-select: none;
+  }
+
+  .status-json-summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .status-json-details[open] .status-json-summary {
+    border-bottom: 1px solid #2a2f38;
+  }
+
+  .status-json-inner {
+    max-height: min(50vh, 22rem);
+    overflow-y: auto;
+    padding: 0.4rem 0.5rem 0.65rem;
+  }
+
   .status-dl {
     margin: 0;
     font-size: 0.75rem;
@@ -891,6 +1080,9 @@
   .status-dl dt {
     color: #9aa0a6;
     margin-top: 0.4rem;
+  }
+  .status-dl dt:first-child {
+    margin-top: 0;
   }
   .status-dl dd {
     margin: 0.1rem 0 0;
@@ -914,6 +1106,33 @@
     background: #0f1114;
     padding: 0.4rem;
     border-radius: 4px;
+  }
+  .slot-summary {
+    margin: 0.35rem 0;
+    font-size: 0.8rem;
+    line-height: 1.4;
+    color: #bdc1c6;
+  }
+  .slot-details {
+    margin: 0.35rem 0;
+    font-size: 0.78rem;
+    color: #9aa0a6;
+    border: 1px solid #2a2f38;
+    border-radius: 6px;
+    padding: 0.35rem 0.5rem;
+    background: #13151a;
+  }
+  .slot-details summary {
+    cursor: pointer;
+    color: #bdc1c6;
+    font-weight: 500;
+    list-style: none;
+  }
+  .slot-details summary::-webkit-details-marker {
+    display: none;
+  }
+  .slot-details .slot-json {
+    margin-top: 0.45rem;
   }
 
   .chat-main {

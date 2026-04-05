@@ -1111,6 +1111,7 @@ def list_games():
                 "description": row["description"] or "",
                 "genre": row["genre"] or "",
                 "opening": data.get("opening", ""),
+                "graph_type": data.get("graph_type", "standard"),
             }
         )
     return jsonify({"games": games})
@@ -1371,6 +1372,7 @@ def list_my_game_content():
             """
             SELECT gc.id, gc.title, gc.description, gc.genre, gc.is_public,
                    gc.source_id, gc.play_count, gc.created_at, gc.updated_at,
+                   gc.game_json,
                    u.uid as original_author_name
             FROM game_content gc
             LEFT JOIN users u ON gc.original_author_id = u.id
@@ -1382,21 +1384,28 @@ def list_my_game_content():
     finally:
         conn.close()
 
-    stories = [
-        {
-            "id": r["id"],
-            "title": r["title"],
-            "description": r["description"],
-            "genre": r["genre"],
-            "is_public": bool(r["is_public"]),
-            "source_id": r["source_id"],
-            "play_count": r["play_count"],
-            "original_author": r["original_author_name"],
-            "created_at": r["created_at"],
-            "updated_at": r["updated_at"],
-        }
-        for r in rows
-    ]
+    stories = []
+    for r in rows:
+        try:
+            parsed = json.loads(r["game_json"])
+            graph_type = parsed.get("graph_type", "standard")
+        except (json.JSONDecodeError, TypeError):
+            graph_type = "standard"
+        stories.append(
+            {
+                "id": r["id"],
+                "title": r["title"],
+                "description": r["description"],
+                "genre": r["genre"],
+                "is_public": bool(r["is_public"]),
+                "source_id": r["source_id"],
+                "play_count": r["play_count"],
+                "original_author": r["original_author_name"],
+                "created_at": r["created_at"],
+                "updated_at": r["updated_at"],
+                "graph_type": graph_type,
+            }
+        )
     return jsonify({"stories": stories})
 
 
@@ -1635,7 +1644,7 @@ def browse_community():
         rows = conn.execute(
             """
             SELECT gc.id, gc.title, gc.description, gc.genre, gc.play_count,
-                   gc.created_at, gc.is_global,
+                   gc.created_at, gc.is_global, gc.game_json,
                    u.uid as author_name,
                    ou.uid as original_author_name
             FROM game_content gc
@@ -1648,22 +1657,29 @@ def browse_community():
     finally:
         conn.close()
 
-    stories = [
-        {
-            "id": r["id"],
-            "title": r["title"],
-            "description": r["description"],
-            "genre": r["genre"],
-            "play_count": r["play_count"],
-            "author": r["author_name"] or "System",
-            "original_author": r["original_author_name"]
-            or r["author_name"]
-            or "System",
-            "is_global": bool(r["is_global"]),
-            "created_at": r["created_at"],
-        }
-        for r in rows
-    ]
+    stories = []
+    for r in rows:
+        try:
+            parsed = json.loads(r["game_json"])
+            graph_type = parsed.get("graph_type", "standard")
+        except (json.JSONDecodeError, TypeError):
+            graph_type = "standard"
+        stories.append(
+            {
+                "id": r["id"],
+                "title": r["title"],
+                "description": r["description"],
+                "genre": r["genre"],
+                "play_count": r["play_count"],
+                "author": r["author_name"] or "System",
+                "original_author": r["original_author_name"]
+                or r["author_name"]
+                or "System",
+                "is_global": bool(r["is_global"]),
+                "created_at": r["created_at"],
+                "graph_type": graph_type,
+            }
+        )
     return jsonify({"stories": stories})
 
 
@@ -1909,6 +1925,7 @@ def chat():
                         "turns": state.get(
                             "turn_count", len(state.get("history") or [])
                         ),
+                        "graph_type": state.get("_graph_type", "standard"),
                     }
                 )
 
@@ -1953,6 +1970,7 @@ def chat():
                     "milestones": milestones,
                     "milestone_progress": m_progress,
                     "current_milestone": milestones[m_progress] if m_progress < len(milestones) else None,
+                    "graph_type": result.get("_graph_type", "standard"),
                 }
             )
         finally:
@@ -1991,6 +2009,7 @@ def status():
     m_progress = state.get("milestone_progress", 0)
     payload = {
         "location": state["location"],
+        "graph_type": state.get("_graph_type", "standard"),
         "moods": {
             name: char["mood"] for name, char in state["characters"].items()
         },

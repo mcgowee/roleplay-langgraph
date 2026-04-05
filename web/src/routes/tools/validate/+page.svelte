@@ -42,14 +42,14 @@
 
 <section class="panel">
   <h2>Validate game JSON</h2>
-  <p class="hint">
-    Paste a full game object (same shape as <code>games/*.json</code>). Runs
-    <code>scripts/validate_game_json.py</code>.
+  <p class="helper-text">
+    Paste a complete game JSON to check for missing fields and formatting errors.
+    The validator will tell you exactly what to fix.
   </p>
   <textarea
     class="mono"
     rows="12"
-    placeholder={`{ "title": "…" }`}
+    placeholder={`{ "title": "My Story", "opening": "...", "locations": { }, "characters": { } }`}
     bind:value={validateInput}
   ></textarea>
   <button type="button" class="btn primary" disabled={validateBusy} onclick={runValidate}>

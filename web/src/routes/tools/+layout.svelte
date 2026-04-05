@@ -8,14 +8,14 @@
     { href: "/tools", label: "Overview" },
     { href: "/tools/validate", label: "Validate JSON" },
     { href: "/tools/feedback", label: "Feedback report" },
-    { href: "/tools/story-draft", label: "Story → draft" },
+    { href: "/tools/story-draft", label: "AI Story Generator" },
   ];
 </script>
 
 <div class="tools-layout">
   <p class="lead">
     These call the same <strong>Python scripts</strong> as the CLI (server-side). Ollama must be
-    running for <em>Story → draft</em>. If <code>npm run dev</code> is not started from the repo
+    running for <em>AI Story Generator</em>. If <code>npm run dev</code> is not started from the repo
     root, set <code>RPG_REPO_ROOT</code> in <code>web/.env</code>.
   </p>
 
@@ -83,6 +83,16 @@
     margin: 0 0 0.75rem;
     font-size: 0.85rem;
     color: #9aa0a6;
+  }
+  :global(.tools-layout .helper-text) {
+    margin: 0 0 0.55rem;
+    color: #9aa0a6;
+    font-size: 0.82rem;
+    line-height: 1.45;
+  }
+  :global(.tools-layout .helper-text.stderr-intro),
+  :global(.tools-layout .helper-text.stdout-intro) {
+    margin-top: 0.75rem;
   }
   :global(.tools-layout .mono) {
     width: 100%;
@@ -185,13 +195,19 @@
     color: #9aa0a6;
     line-height: 1.45;
   }
+  :global(.tools-layout .hub-list p.helper-text) {
+    margin-top: 0.35rem;
+    font-size: 0.82rem;
+    line-height: 1.45;
+  }
   :global(.tools-layout .hub-list code) {
     background: #2a2f38;
     padding: 0.1rem 0.35rem;
     border-radius: 4px;
     font-size: 0.85em;
   }
-  :global(.tools-layout .panel .hint a) {
+  :global(.tools-layout .panel .hint a),
+  :global(.tools-layout .panel .helper-text a) {
     color: #8ab4f8;
   }
 </style>
