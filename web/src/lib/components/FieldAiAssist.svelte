@@ -22,12 +22,16 @@
   let guideNote = $state("");
   let busy = $state(false);
   let localErr = $state<string | null>(null);
+  let lastPromptUsed = $state<string | null>(null);
+  let promptDetailOpen = $state(false);
 
   let canRun = $derived(!disabled && !busy && value.trim().length > 0);
 
   async function run(instruction: string) {
     localErr = null;
     busy = true;
+    lastPromptUsed = null;
+    promptDetailOpen = false;
     try {
       const r = await fetch("/api/improve-story-text", {
         method: "POST",
@@ -39,7 +43,11 @@
           instruction: instruction.trim(),
         }),
       });
-      const data = (await r.json()) as { text?: string; error?: string };
+      const data = (await r.json()) as {
+        text?: string;
+        error?: string;
+        prompt_used?: string;
+      };
       if (!r.ok) {
         localErr = data.error ?? "Request failed";
         return;
@@ -47,6 +55,11 @@
       const t = data.text;
       if (typeof t === "string" && t.length > 0) {
         value = t;
+      }
+      if (typeof data.prompt_used === "string" && data.prompt_used.length > 0) {
+        lastPromptUsed = data.prompt_used;
+      } else {
+        lastPromptUsed = null;
       }
       guideOpen = false;
       guideNote = "";
@@ -114,6 +127,12 @@
   {/if}
   {#if localErr}
     <p class="ai-err">{localErr}</p>
+  {/if}
+  {#if lastPromptUsed}
+    <details class="ai-prompt-details" bind:open={promptDetailOpen}>
+      <summary class="ai-prompt-summary">View AI prompt</summary>
+      <pre class="ai-prompt-pre">{lastPromptUsed}</pre>
+    </details>
   {/if}
 </div>
 
@@ -183,5 +202,42 @@
     color: #f28b82;
     text-align: right;
     line-height: 1.3;
+  }
+  .ai-prompt-details {
+    width: 100%;
+    margin-top: 0.25rem;
+    text-align: left;
+  }
+  .ai-prompt-summary {
+    cursor: pointer;
+    font-size: 0.7rem;
+    color: #6f747a;
+    list-style: none;
+  }
+  .ai-prompt-summary::-webkit-details-marker {
+    display: none;
+  }
+  .ai-prompt-summary::before {
+    content: "▸ ";
+    display: inline-block;
+    transition: transform 0.15s ease;
+    color: #5f6368;
+  }
+  details[open] > .ai-prompt-summary::before {
+    transform: rotate(90deg);
+  }
+  .ai-prompt-pre {
+    margin: 0.35rem 0 0;
+    padding: 0.45rem 0.5rem;
+    max-height: 12rem;
+    overflow: auto;
+    font-size: 0.68rem;
+    line-height: 1.35;
+    color: #80868b;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid #2a2f38;
+    border-radius: 6px;
+    white-space: pre-wrap;
+    word-break: break-word;
   }
 </style>

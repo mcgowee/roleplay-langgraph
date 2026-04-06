@@ -15,6 +15,7 @@ from auth import check_password, hash_password, login_required
 from config import (
     DEFAULT_MODEL,
     GAMES_DIR,
+    GRAPHS_DIR,
     LOGS_DIR,
     FEEDBACK_DIR,
     HISTORY_LIMIT,
@@ -1057,92 +1058,99 @@ def route_social_entry(state: State) -> str:
     return "movement"
 
 
-# --- Graph builders ---
-def build_standard_graph():
-    """Build the standard graph: movement → inventory → narrator → mood → npc → condense → memory → rules."""
-    g = StateGraph(State)
-    g.add_node("movement", movement_node)
-    g.add_node("inventory", inventory_node)
-    g.add_node("narrator", narrator_node)
-    g.add_node("mood", mood_node)
-    g.add_node("npc", npc_node)
-    g.add_node("condense", condense_node)
-    g.add_node("memory", memory_node)
-    g.add_node("rules", rules_node)
-
-    g.set_conditional_entry_point(
-        route_graph_entry,
-        {"movement": "movement", "inventory": "inventory"},
-    )
-    g.add_conditional_edges(
-        "movement",
-        route_after_movement,
-        {"inventory": "inventory", "narrator": "narrator"},
-    )
-    g.add_edge("inventory", "narrator")
-    g.add_conditional_edges(
-        "narrator",
-        route_after_narrator,
-        {"mood": "mood", "memory": "condense"},
-    )
-    g.add_edge("mood", "npc")
-    g.add_edge("npc", "condense")
-    g.add_edge("condense", "memory")
-    g.add_conditional_edges(
-        "memory",
-        route_after_memory,
-        {END: END, "rules": "rules"},
-    )
-    g.add_edge("rules", END)
-
-    return g.compile()
-
-
-def build_social_graph():
-    """Build the social graph: movement → guide_arrival → milestone → tension → npc → narrator → condense → memory → rules."""
-    g = StateGraph(State)
-
-    # Nodes
-    g.add_node("movement", movement_node)
-    g.add_node("guide_arrival", guide_arrival_node)
-    g.add_node("milestone", milestone_node)
-    g.add_node("tension", tension_node)
-    g.add_node("narrator", narrator_node)
-    g.add_node("npc", npc_node)
-    g.add_node("condense", condense_node)
-    g.add_node("memory", memory_node)
-    g.add_node("rules", rules_node)
-
-    # Entry: movement if multiple locations, otherwise skip to guide_arrival
-    g.set_conditional_entry_point(
-        route_social_entry,
-        {"movement": "movement", "guide_arrival": "guide_arrival"},
-    )
-
-    # movement → guide_arrival → milestone → tension → npc → narrator → condense → memory
-    g.add_edge("movement", "guide_arrival")
-    g.add_edge("guide_arrival", "milestone")
-    g.add_edge("milestone", "tension")
-    g.add_edge("tension", "npc")
-    g.add_edge("npc", "narrator")
-    g.add_edge("narrator", "condense")
-    g.add_edge("condense", "memory")
-
-    # After memory: check rules if they exist, otherwise END
-    g.add_conditional_edges(
-        "memory",
-        route_after_memory,
-        {END: END, "rules": "rules"},
-    )
-    g.add_edge("rules", END)
-
-    return g.compile()
-
-
-GRAPH_REGISTRY = {
-    "standard": build_standard_graph(),
-    "social": build_social_graph(),
+NODE_REGISTRY = {
+    "movement": movement_node,
+    "inventory": inventory_node,
+    "narrator": narrator_node,
+    "mood": mood_node,
+    "npc": npc_node,
+    "condense": condense_node,
+    "memory": memory_node,
+    "rules": rules_node,
+    "milestone": milestone_node,
+    "guide_arrival": guide_arrival_node,
+    "tension": tension_node,
 }
+
+
+ROUTER_REGISTRY = {
+    "route_graph_entry": route_graph_entry,
+    "route_after_movement": route_after_movement,
+    "route_after_narrator": route_after_narrator,
+    "route_after_memory": route_after_memory,
+    "route_social_entry": route_social_entry,
+}
+
+
+def _normalize_router_mapping(mapping: dict) -> dict:
+    """Replace '__end__' string keys/values with LangGraph END for JSON definitions."""
+    out: dict = {}
+    for k, v in mapping.items():
+        nk = END if k == "__end__" else k
+        nv = END if v == "__end__" else v
+        out[nk] = nv
+    return out
+
+
+def build_graph_from_json(definition: dict):
+    """Build a compiled StateGraph from a JSON-style pipeline definition."""
+    g = StateGraph(State)
+
+    for name in definition["nodes"]:
+        g.add_node(name, NODE_REGISTRY[name])
+
+    entry = definition["entry_point"]
+    entry_router = ROUTER_REGISTRY[entry["router"]]
+    entry_mapping = _normalize_router_mapping(entry["mapping"])
+    g.set_conditional_entry_point(entry_router, entry_mapping)
+
+    for edge in definition["edges"]:
+        to_node = END if edge["to"] == "__end__" else edge["to"]
+        g.add_edge(edge["from"], to_node)
+
+    for spec in definition["conditional_edges"]:
+        router_fn = ROUTER_REGISTRY[spec["router"]]
+        proc_map = _normalize_router_mapping(spec["mapping"])
+        g.add_conditional_edges(spec["from"], router_fn, proc_map)
+
+    return g.compile()
+
+
+def _load_graph_definitions() -> dict:
+    """Load compiled LangGraph pipelines from ``graphs/*.json``."""
+    registry: dict = {}
+    if not GRAPHS_DIR.exists():
+        logger.warning("GRAPHS_DIR does not exist: %s", GRAPHS_DIR)
+        return registry
+
+    paths = sorted(GRAPHS_DIR.glob("*.json"))
+    if not paths:
+        logger.warning("No graph JSON files found in %s", GRAPHS_DIR)
+        return registry
+
+    for path in paths:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                definition = json.load(f)
+            name = definition.get("name")
+            if not name:
+                logger.warning("Graph file %s has no 'name' field; skipping", path)
+                continue
+            if name in registry:
+                logger.warning(
+                    "Duplicate graph name %r in %s; overwriting earlier entry",
+                    name,
+                    path.name,
+                )
+            registry[name] = build_graph_from_json(definition)
+            logger.info("Loaded graph %r from %s", name, path.name)
+        except Exception as e:
+            logger.error("Failed to load graph from %s: %s", path, e)
+
+    return registry
+
+
+GRAPH_REGISTRY = _load_graph_definitions()
 
 
 def get_compiled_graph(graph_type: str):
@@ -1150,7 +1158,82 @@ def get_compiled_graph(graph_type: str):
     return GRAPH_REGISTRY.get(graph_type, GRAPH_REGISTRY["standard"])
 
 
-chain = GRAPH_REGISTRY["standard"]
+def _safe_graph_basename(name: str) -> bool:
+    if not name or not isinstance(name, str):
+        return False
+    if ".." in name or "/" in name or "\\" in name:
+        return False
+    return all(c.isalnum() or c in "_-" for c in name)
+
+
+def _validate_graph_definition(
+    definition: dict, url_name: Optional[str] = None
+) -> tuple[bool, str]:
+    """Return (True, '') if valid, else (False, error message)."""
+    if not isinstance(definition, dict):
+        return False, "Body must be a JSON object"
+
+    name = definition.get("name")
+    if not name or not isinstance(name, str):
+        return False, "Field 'name' is required and must be a string"
+    if not _safe_graph_basename(name):
+        return False, "Invalid 'name': use only letters, numbers, underscores, and hyphens"
+
+    if url_name is not None and name != url_name:
+        return False, f"Field 'name' must match URL ({url_name!r})"
+
+    nodes = definition.get("nodes")
+    if not isinstance(nodes, list) or not nodes:
+        return False, "'nodes' must be a non-empty list of strings"
+    if not all(isinstance(n, str) for n in nodes):
+        return False, "Each entry in 'nodes' must be a string"
+    node_set = set(nodes)
+
+    for n in nodes:
+        if n not in NODE_REGISTRY:
+            return False, f"Unknown node type: {n!r}"
+
+    entry = definition.get("entry_point")
+    if not isinstance(entry, dict):
+        return False, "'entry_point' must be an object"
+    entry_router = entry.get("router")
+    if not isinstance(entry_router, str) or entry_router not in ROUTER_REGISTRY:
+        return False, f"Unknown entry_point router: {entry_router!r}"
+    if not isinstance(entry.get("mapping"), dict):
+        return False, "'entry_point.mapping' must be an object"
+
+    edges = definition.get("edges")
+    if not isinstance(edges, list):
+        return False, "'edges' must be a list"
+    for i, edge in enumerate(edges):
+        if not isinstance(edge, dict):
+            return False, f"edges[{i}] must be an object"
+        from_n = edge.get("from")
+        to_n = edge.get("to")
+        if from_n not in node_set:
+            return False, f"edges[{i}].from {from_n!r} is not listed in 'nodes'"
+        if to_n != "__end__" and to_n not in node_set:
+            return False, f"edges[{i}].to {to_n!r} is not listed in 'nodes' (use '__end__' for END)"
+
+    cond_edges = definition.get("conditional_edges")
+    if not isinstance(cond_edges, list):
+        return False, "'conditional_edges' must be a list"
+    for i, ce in enumerate(cond_edges):
+        if not isinstance(ce, dict):
+            return False, f"conditional_edges[{i}] must be an object"
+        r = ce.get("router")
+        if not isinstance(r, str) or r not in ROUTER_REGISTRY:
+            return False, f"Unknown router in conditional_edges[{i}]: {r!r}"
+        if not isinstance(ce.get("mapping"), dict):
+            return False, f"conditional_edges[{i}].mapping must be an object"
+
+    try:
+        build_graph_from_json(definition)
+    except Exception as e:
+        logger.warning("build_graph_from_json failed during validation: %s", e)
+        return False, f"Invalid graph structure: {e}"
+
+    return True, ""
 
 
 # --- Game state in memory (keyed by per-adventure session_id string) ---
@@ -1319,6 +1402,148 @@ def build_opening_message(state: dict) -> str:
 
 
 # --- Flask routes ---
+
+
+@app.route("/graphs", methods=["GET"])
+def list_graph_definitions():
+    """List graph metadata (name, description, node_count) from ``graphs/*.json``."""
+    if not GRAPHS_DIR.exists():
+        return jsonify({"graphs": []})
+
+    out = []
+    for path in sorted(GRAPHS_DIR.glob("*.json")):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError) as e:
+            logger.warning("Skipping %s: %s", path, e)
+            continue
+        nodes = data.get("nodes")
+        ncount = len(nodes) if isinstance(nodes, list) else 0
+        out.append(
+            {
+                "name": data.get("name") or path.stem,
+                "description": (data.get("description") or "") if isinstance(data.get("description"), str) else "",
+                "node_count": ncount,
+            }
+        )
+    return jsonify(out)
+
+
+@app.route("/graphs/<name>", methods=["GET"])
+def get_graph_definition(name: str):
+    if not _safe_graph_basename(name):
+        return jsonify({"error": "Invalid graph name"}), 400
+    path = GRAPHS_DIR / f"{name}.json"
+    if not path.is_file():
+        return jsonify({"error": "Graph not found"}), 404
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify(data)
+
+
+@app.route("/graphs/<name>", methods=["PUT"])
+def put_graph_definition(name: str):
+    if not _safe_graph_basename(name):
+        return jsonify({"error": "Invalid graph name"}), 400
+    definition = request.get_json(silent=True)
+    if not isinstance(definition, dict):
+        return jsonify({"error": "JSON body required"}), 400
+
+    ok, err = _validate_graph_definition(definition, url_name=name)
+    if not ok:
+        return jsonify({"error": err}), 400
+
+    path = GRAPHS_DIR / f"{name}.json"
+    try:
+        GRAPHS_DIR.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(definition, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+    except OSError as e:
+        return jsonify({"error": str(e)}), 500
+
+    try:
+        GRAPH_REGISTRY[name] = build_graph_from_json(definition)
+    except Exception as e:
+        logger.exception("Failed to compile graph after save")
+        return jsonify({"error": f"Saved file but failed to compile: {e}"}), 500
+
+    logger.info("Updated graph %r at %s", name, path.name)
+    return jsonify({"ok": True, "name": name}), 200
+
+
+@app.route("/graphs", methods=["POST"])
+def post_graph_definition():
+    definition = request.get_json(silent=True)
+    if not isinstance(definition, dict):
+        return jsonify({"error": "JSON body required"}), 400
+
+    ok, err = _validate_graph_definition(definition, url_name=None)
+    if not ok:
+        return jsonify({"error": err}), 400
+
+    name = definition["name"]
+    path = GRAPHS_DIR / f"{name}.json"
+    if path.is_file():
+        return jsonify({"error": f"Graph {name!r} already exists"}), 409
+
+    try:
+        GRAPHS_DIR.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(definition, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+    except OSError as e:
+        return jsonify({"error": str(e)}), 500
+
+    try:
+        GRAPH_REGISTRY[name] = build_graph_from_json(definition)
+    except Exception as e:
+        logger.exception("Failed to compile graph after create")
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return jsonify({"error": f"Failed to compile graph: {e}"}), 500
+
+    logger.info("Created graph %r at %s", name, path.name)
+    return jsonify({"ok": True, "name": name}), 200
+
+
+@app.route("/graphs/<name>", methods=["DELETE"])
+def delete_graph_definition(name: str):
+    if not _safe_graph_basename(name):
+        return jsonify({"error": "Invalid graph name"}), 400
+    if name == "standard":
+        return jsonify({"error": "Cannot delete the 'standard' graph"}), 403
+
+    path = GRAPHS_DIR / f"{name}.json"
+    if not path.is_file():
+        return jsonify({"error": "Graph not found"}), 404
+
+    try:
+        path.unlink()
+    except OSError as e:
+        return jsonify({"error": str(e)}), 500
+
+    GRAPH_REGISTRY.pop(name, None)
+    logger.info("Deleted graph %r (%s)", name, path.name)
+    return jsonify({"ok": True, "name": name}), 200
+
+
+@app.route("/graph-registry", methods=["GET"])
+def graph_registry_keys():
+    return jsonify(
+        {
+            "nodes": sorted(NODE_REGISTRY.keys()),
+            "routers": sorted(ROUTER_REGISTRY.keys()),
+        }
+    )
+
+
 @app.route("/games", methods=["GET"])
 def list_games():
     conn = get_db()
@@ -1972,7 +2197,51 @@ def generate_story():
     if len(concept) > 5000:
         return jsonify({"error": "concept must be at most 5000 characters"}), 400
 
-    prompt = f"""You are a game designer for a parser-style text RPG (second-person, "you").
+    graph_type = (data.get("graph_type") or "standard").strip().lower()
+
+    if graph_type == "social":
+        prompt = f"""You are a game designer for a parser-style text RPG (second-person, "you").
+
+This story uses the "social" graph: dialogue-focused play with ordered milestones and a guide NPC who follows the player.
+
+The user described this story idea:
+---
+{concept}
+---
+
+Output a single JSON object (no markdown, no code fences, no commentary) with this exact structure and field types:
+
+- graph_type: string, must be exactly "social"
+- title: string
+- opening: string (second person, present tense; first thing the player reads)
+- description: string (short catalog pitch, 1-2 sentences)
+- genre: one of mystery, thriller, drama, comedy, sci-fi, horror, fantasy
+- narrator_prompt: string (voice/style for the narrator; end beats with "What do you do?" where appropriate)
+- player_name: string
+- player_background: string
+- player_traits: array of short strings (e.g. ["cautious", "witty"])
+- guide: string (snake_case id of the NPC who follows the player between locations; must exactly match one characters[].key)
+- milestones: array of 3 to 4 strings, ordered milestone goals the player should achieve in sequence
+- locations: array of 1 to 3 objects, each with:
+  - key: string (snake_case, e.g. "cafe_patio")
+  - description: string (room/area description)
+  - items: array of strings (can be empty)
+- characters: array of 1 to 3 objects, each with:
+  - key: string (snake_case NPC id)
+  - personality: string (instructions for the NPC voice)
+  - first_line: string (first spoken line)
+  - location: string (must exactly match one locations[].key)
+  - stall_threshold: integer (0 disables tension tracking; otherwise max turns without milestone progress before "stalling" mood)
+  - tension_stages: array with the same length as milestones; index i describes behavior during milestone i. Each element is an object with:
+    - progressing: string (how this NPC acts when the scene is moving forward)
+    - stalling: string (how this NPC acts when interaction has stalled)
+  Do NOT include a "mood" field on characters; use stall_threshold and tension_stages instead.
+
+Ensure every character's location matches a location key, guide matches one character key, and each character's tension_stages has the same length as milestones.
+Use consistent snake_case keys.
+Respond with ONLY valid JSON."""
+    else:
+        prompt = f"""You are a game designer for a parser-style text RPG (second-person, "you").
 
 The user described this story idea:
 ---
@@ -2029,7 +2298,7 @@ Respond with ONLY valid JSON."""
     if not isinstance(story, dict):
         return jsonify({"error": "AI response was not a JSON object"}), 422
 
-    return jsonify({"story": story})
+    return jsonify({"story": story, "prompt_used": prompt})
 
 
 _IMPROVE_STORY_TEXT_FIELDS: dict[str, str] = {
@@ -2112,7 +2381,7 @@ Output rules:
             out = out[1:-1].strip()
         if len(out) > 12000:
             out = out[:12000]
-        return jsonify({"text": out})
+        return jsonify({"text": out, "prompt_used": prompt})
     except Exception as e:
         logger.exception("improve-story-text failed")
         return jsonify({"error": _llm_public_error_message(e)}), 500

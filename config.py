@@ -21,6 +21,7 @@ SECRET_KEY = get_env(
 DATABASE_PATH = Path(get_env("DATABASE_PATH", str(BASE_DIR / "rpg.db")))
 
 GAMES_DIR = Path(get_env("GAMES_DIR", str(BASE_DIR / "games")))
+GRAPHS_DIR = Path(get_env("GRAPHS_DIR", str(BASE_DIR / "graphs")))
 SESSIONS_DIR = Path(get_env("SESSIONS_DIR", str(BASE_DIR / "sessions")))
 LOGS_DIR = Path(get_env("LOGS_DIR", str(BASE_DIR / "logs")))
 FEEDBACK_DIR = Path(get_env("FEEDBACK_DIR", str(LOGS_DIR / "feedback")))
@@ -49,6 +50,7 @@ LOG_LEVEL = get_env("LOG_LEVEL", "INFO")
 
 def ensure_dirs():
     GAMES_DIR.mkdir(parents=True, exist_ok=True)
+    GRAPHS_DIR.mkdir(parents=True, exist_ok=True)
     SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     FEEDBACK_DIR.mkdir(parents=True, exist_ok=True)

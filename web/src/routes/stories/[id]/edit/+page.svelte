@@ -37,12 +37,19 @@
     genre: string | null;
   };
 
+  type GraphMeta = {
+    name: string;
+    description: string;
+    node_count: number;
+  };
+
   let storyId = $state<number | null>(null);
   let notFound = $state(false);
   let title = $state("");
   let description = $state("");
   let genre = $state("");
   let graphType = $state("standard");
+  let graphTypes = $state<GraphMeta[]>([]);
   /** From last loaded JSON; edit JSON to change — not live-synced while typing. */
   let socialGuideDisplay = $state("");
   let socialMilestonesLines = $state<string[]>([]);
@@ -52,6 +59,74 @@
   let serverError = $state<string | null>(null);
   let saving = $state(false);
   let loading = $state(true);
+
+  function graphTypeLabel(name: string): string {
+    return name
+      .split(/[_\s]+/)
+      .filter(Boolean)
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+      .join(" ");
+  }
+
+  function resolveGraphType(gt: string): string {
+    const g = gt.trim().toLowerCase();
+    if (graphTypes.length > 0) {
+      if (graphTypes.some((x) => x.name === g)) return g;
+      if (g === "social" && graphTypes.some((x) => x.name === "social"))
+        return "social";
+      if (graphTypes.some((x) => x.name === "standard")) return "standard";
+      return graphTypes[0].name;
+    }
+    return g === "social" ? "social" : "standard";
+  }
+
+  const selectedGraphDescription = $derived.by(() => {
+    const meta = graphTypes.find((x) => x.name === graphType);
+    return (meta?.description ?? "").trim();
+  });
+
+  async function loadGraphTypes() {
+    try {
+      const r = await fetch("/api/graphs", { credentials: "include" });
+      if (!r.ok) return;
+      const data = await r.json();
+      graphTypes = Array.isArray(data) ? data : [];
+      if (
+        graphTypes.length > 0 &&
+        !graphTypes.some((x) => x.name === graphType)
+      ) {
+        graphType = graphTypes.some((x) => x.name === "standard")
+          ? "standard"
+          : graphTypes[0].name;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function patchGameJsonGraphType() {
+    const raw = gameJson.trim();
+    if (!raw) {
+      applyGraphContextFromParsed({
+        graph_type: graphType,
+        ...(graphType === "social"
+          ? {
+              guide: socialGuideDisplay,
+              milestones: socialMilestonesLines,
+            }
+          : {}),
+      } as Record<string, unknown>);
+      return;
+    }
+    try {
+      const o = JSON.parse(raw) as Record<string, unknown>;
+      o.graph_type = graphType;
+      gameJson = JSON.stringify(o, null, 2);
+      applyGraphContextFromParsed(o);
+    } catch {
+      /* invalid JSON — graphType still updated for labels */
+    }
+  }
 
   function validateJson(
     titleInput: string,
@@ -96,7 +171,7 @@
 
   function applyGraphContextFromParsed(parsed: Record<string, unknown>) {
     const raw = String(parsed.graph_type ?? "standard").trim().toLowerCase();
-    graphType = raw === "social" ? "social" : "standard";
+    graphType = resolveGraphType(raw);
     if (graphType === "social") {
       socialGuideDisplay = String(parsed.guide ?? "").trim();
       const m = parsed.milestones;
@@ -236,8 +311,9 @@
     goto("/stories");
   }
 
-  onMount(() => {
-    void loadStory();
+  onMount(async () => {
+    await loadGraphTypes();
+    await loadStory();
   });
 </script>
 
@@ -301,18 +377,40 @@
       </label>
 
       <div class="field graph-meta-block">
-        <span class="graph-meta-label">Story type</span>
-        <div class="graph-meta-row">
-          <span
-            class="story-type-badge"
-            class:story-type-social={graphType === "social"}
-            >{graphType === "social" ? "Social" : "Standard"}</span
-          >
-        </div>
+        <label class="graph-meta-label" for="story-graph-type">Story type</label>
+        <select
+          id="story-graph-type"
+          class="select graph-type-select"
+          value={graphType}
+          onchange={(e) => {
+            graphType = (e.currentTarget as HTMLSelectElement).value;
+            patchGameJsonGraphType();
+          }}
+        >
+          {#if graphTypes.length === 0}
+            <option value="standard">Standard</option>
+            <option value="social">Social</option>
+          {:else}
+            {#each graphTypes as gt (gt.name)}
+              <option value={gt.name}>{graphTypeLabel(gt.name)}</option>
+            {/each}
+          {/if}
+        </select>
         <p class="graph-meta-hint">
-          Shown from JSON as loaded. To change type or social fields, edit
-          <code>graph_type</code>, <code>guide</code>, and
-          <code>milestones</code> in the textarea below, then save.
+          {#if selectedGraphDescription}
+            {selectedGraphDescription}
+          {:else if graphTypes.length === 0}
+            Shown from JSON as loaded. To change type or social fields, edit
+            <code>graph_type</code>, <code>guide</code>, and
+            <code>milestones</code> in the textarea below, then save.
+          {:else}
+            Select a pipeline template. When the JSON below is valid,
+            <code>graph_type</code> updates automatically.
+          {/if}
+        </p>
+        <p class="graph-meta-hint graph-meta-hint-secondary">
+          For <code>guide</code> and <code>milestones</code>, edit the JSON textarea
+          (social stories).
         </p>
         {#if graphType === "social"}
           <div class="social-readonly-summary">
@@ -427,28 +525,21 @@
     color: #9aa0a6;
     margin-bottom: 0.35rem;
   }
-  .graph-meta-row {
-    margin-top: 0.25rem;
-  }
-  .story-type-badge {
-    display: inline-block;
-    padding: 0.25rem 0.65rem;
-    border-radius: 999px;
-    font-size: 0.78rem;
-    font-weight: 600;
-    letter-spacing: 0.03em;
-    background: #2a2f38;
-    color: #bdc1c6;
-  }
-  .story-type-badge.story-type-social {
-    background: #1a3a3a;
-    color: #4dd0e1;
+  .graph-type-select {
+    display: block;
+    max-width: 22rem;
+    margin-top: 0.15rem;
   }
   .graph-meta-hint {
     margin: 0.5rem 0 0;
     font-size: 0.75rem;
     line-height: 1.45;
     color: #80868b;
+  }
+  .graph-meta-hint-secondary {
+    margin: 0.35rem 0 0;
+    font-size: 0.72rem;
+    color: #6f747a;
   }
   .graph-meta-hint code {
     font-size: 0.72rem;

@@ -17,10 +17,12 @@ The engine supports multiple graph templates. Each template is a different LangG
 
 ### Current templates
 
-| Template | Graph Type | Nodes | Use Case |
-|----------|-----------|-------|----------|
-| Standard | `"standard"` | movement, inventory, narrator, mood, npc, condense, memory, rules | Exploration + NPCs + items + win/lose |
-| Social | `"social"` | movement, guide_arrival, milestone, tension, npc, narrator, condense, memory, rules | Dialogue-focused with milestone progression + tension tracking |
+
+| Template | Graph Type   | Nodes                                                                               | Use Case                                                       |
+| -------- | ------------ | ----------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| Standard | `"standard"` | movement, inventory, narrator, mood, npc, condense, memory, rules                   | Exploration + NPCs + items + win/lose                          |
+| Social   | `"social"`   | movement, guide_arrival, milestone, tension, npc, narrator, condense, memory, rules | Dialogue-focused with milestone progression + tension tracking |
+
 
 ## State
 
@@ -55,29 +57,35 @@ Additionally, `_graph_type` is stored as a private key (not in the TypedDict) to
 
 ### Nodes used by both templates
 
-| Node | LLM Call? | What It Does |
-|------|-----------|-------------|
-| `movement_node` | Yes (classifier) | Asks LLM if the player is trying to move. Returns location key or STAY. Updates `state["location"]` if moving. |
-| `narrator_node` | Yes (creative) | Main storytelling. Sends location, inventory, NPCs, milestone context, mood context, memory summary + last 2 raw turns, and player message to LLM. Returns scene narration as `state["response"]`. |
-| `npc_node` | Yes (creative, per NPC) | For each NPC in the room, generates in-character dialogue. Uses tension stage descriptions when available, falls back to mood_descriptions. Guide NPC gets extra instruction to nudge toward milestones. Appends to `state["response"]` with mood indicator. |
-| `condense_node` | Yes (creative) | Maintains `memory_summary` — asks LLM to update a rolling summary (under 100 words) with key facts, relationship developments, and emotional shifts from the current turn. Keeps prompt sizes bounded over long games. |
-| `memory_node` | No | Combines player message + response into one string, appends to `state["history"]`, sets `turn_count`. |
-| `rules_node` | Yes (classifier) | Checks trigger words (string match) and win/lose conditions (LLM judges from last 6 raw history entries). If milestones exist, blocks WIN until all complete. |
+
+| Node            | LLM Call?               | What It Does                                                                                                                                                                                                                                                 |
+| --------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `movement_node` | Yes (classifier)        | Asks LLM if the player is trying to move. Returns location key or STAY. Updates `state["location"]` if moving.                                                                                                                                               |
+| `narrator_node` | Yes (creative)          | Main storytelling. Sends location, inventory, NPCs, milestone context, mood context, memory summary + last 2 raw turns, and player message to LLM. Returns scene narration as `state["response"]`.                                                           |
+| `npc_node`      | Yes (creative, per NPC) | For each NPC in the room, generates in-character dialogue. Uses tension stage descriptions when available, falls back to mood_descriptions. Guide NPC gets extra instruction to nudge toward milestones. Appends to `state["response"]` with mood indicator. |
+| `condense_node` | Yes (creative)          | Maintains `memory_summary` — asks LLM to update a rolling summary (under 100 words) with key facts, relationship developments, and emotional shifts from the current turn. Keeps prompt sizes bounded over long games.                                       |
+| `memory_node`   | No                      | Combines player message + response into one string, appends to `state["history"]`, sets `turn_count`.                                                                                                                                                        |
+| `rules_node`    | Yes (classifier)        | Checks trigger words (string match) and win/lose conditions (LLM judges from last 6 raw history entries). If milestones exist, blocks WIN until all complete.                                                                                                |
+
 
 ### Nodes only in standard template
 
-| Node | LLM Call? | What It Does |
-|------|-----------|-------------|
-| `inventory_node` | Yes (classifier) | Asks LLM if the player is picking up an item. Moves item from room to inventory with weight limit check. |
-| `mood_node` | Yes (classifier, per NPC) | For each NPC in the room, asks LLM: mood goes UP, DOWN, or SAME. Adjusts mood value (1-10 scale). Runs in parallel via thread pool. |
+
+| Node             | LLM Call?                 | What It Does                                                                                                                        |
+| ---------------- | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `inventory_node` | Yes (classifier)          | Asks LLM if the player is picking up an item. Moves item from room to inventory with weight limit check.                            |
+| `mood_node`      | Yes (classifier, per NPC) | For each NPC in the room, asks LLM: mood goes UP, DOWN, or SAME. Adjusts mood value (1-10 scale). Runs in parallel via thread pool. |
+
 
 ### Nodes only in social template
 
-| Node | LLM Call? | What It Does |
-|------|-----------|-------------|
-| `guide_arrival_node` | No | If the guide NPC isn't in the current room, moves them here. Removes guide from old room, adds to current room. Sets hint for narrator. |
-| `milestone_node` | No | Checks if the player's message contains the current milestone (loose string match). Advances progress, blocks skip-ahead, or passes through. |
-| `tension_node` | No | Tracks turns since last milestone. If turns exceed the lowest `stall_threshold` among NPCs in the room, flips `tension_mood` from "progressing" to "stalling". Resets on milestone achievement. |
+
+| Node                 | LLM Call? | What It Does                                                                                                                                                                                    |
+| -------------------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `guide_arrival_node` | No        | If the guide NPC isn't in the current room, moves them here. Removes guide from old room, adds to current room. Sets hint for narrator.                                                         |
+| `milestone_node`     | No        | Checks if the player's message contains the current milestone (loose string match). Advances progress, blocks skip-ahead, or passes through.                                                    |
+| `tension_node`       | No        | Tracks turns since last milestone. If turns exceed the lowest `stall_threshold` among NPCs in the room, flips `tension_mood` from "progressing" to "stalling". Resets on milestone achievement. |
+
 
 ## Standard Graph
 
@@ -93,6 +101,7 @@ rules → END
 ```
 
 Conditional edges skip nodes when unnecessary:
+
 - Skip movement if only 1 location
 - Skip inventory if no items in current room
 - Skip mood+npc if no NPCs in current room (goes narrator → condense → memory)
@@ -120,6 +129,8 @@ flowchart LR
   MEMR -->|no| DONE([END])
   RULES --> DONE
 ```
+
+
 
 ### Auto-generated from LangGraph (actual compiled graph)
 
@@ -153,6 +164,8 @@ graph TD;
 	classDef last fill:#bfb6fc
 ```
 
+
+
 ## Social Graph
 
 ```
@@ -185,6 +198,8 @@ flowchart LR
   RULES --> DONE
 ```
 
+
+
 ### Auto-generated from LangGraph (actual compiled graph)
 
 ```mermaid
@@ -216,6 +231,8 @@ graph TD;
 	classDef first fill-opacity:0
 	classDef last fill:#bfb6fc
 ```
+
+
 
 ## Game JSON Fields for Social Graph
 
@@ -272,6 +289,7 @@ Follow these steps to add a new template (e.g., `"combat"`):
 Decide which nodes your story type needs. You can reuse existing nodes and/or create new ones.
 
 Questions to answer:
+
 - Does the player move between locations? → include `movement_node`
 - Does the player pick up items? → include `inventory_node`
 - Do NPCs have shifting moods? → include `mood_node`
@@ -284,11 +302,13 @@ Questions to answer:
 ### Step 2: Create any new nodes
 
 Add your node function in `app.py` near the existing nodes. A node function:
+
 - Takes `state: State` as its only argument
 - Returns a partial dict with only the fields it changed
 - Returns `{}` if it has nothing to do (early exit)
 
 Pattern for a classifier node (LLM picks from fixed options):
+
 ```python
 def my_node(state: State) -> State:
     # Early exit if nothing to check
@@ -306,6 +326,7 @@ def my_node(state: State) -> State:
 ```
 
 Pattern for a pure code node (no LLM):
+
 ```python
 def my_node(state: State) -> State:
     if not some_condition:
@@ -317,6 +338,7 @@ def my_node(state: State) -> State:
 ### Step 3: Create routing functions (if needed)
 
 If your graph has conditional edges, add routing functions near the existing ones (after the `# --- Graph routing helpers ---` section). A routing function:
+
 - Takes `state: State`
 - Returns a string (the name of the next node)
 
@@ -374,6 +396,7 @@ GRAPH_REGISTRY = {
 ### Step 6: Add new State fields (if needed)
 
 If your nodes need new state fields:
+
 1. Add them to the `State` TypedDict
 2. Add them to `_build_state_from_json()` with a default value
 3. Add them to `load_game()` with the same default
@@ -386,6 +409,7 @@ Create a game JSON in `games/` with `"graph_type": "your_type"`. Include all the
 ### Step 8: Test
 
 1. **Unit test nodes from the command line:**
+
 ```bash
 source ~/open-webui-env/bin/activate
 python3 -c "
@@ -395,7 +419,8 @@ print(result)
 "
 ```
 
-2. **Verify the graph compiles:**
+1. **Verify the graph compiles:**
+
 ```bash
 python3 -c "
 from app import get_compiled_graph
@@ -404,15 +429,14 @@ print('Compiled:', g is not None)
 "
 ```
 
-3. **Play test in the web app:**
-   - Delete the DB: `rm rpg.db`
-   - Restart Flask
-   - Start a new adventure with your test game
-   - Play through several turns
-
-4. **Verify backward compatibility:**
-   - Play an existing standard game — should work identically
-   - Load a saved game from before the change — should default to standard
+1. **Play test in the web app:**
+  - Delete the DB: `rm rpg.db`
+  - Restart Flask
+  - Start a new adventure with your test game
+  - Play through several turns
+2. **Verify backward compatibility:**
+  - Play an existing standard game — should work identically
+  - Load a saved game from before the change — should default to standard
 
 ### Step 9: Deploy
 
@@ -428,25 +452,33 @@ ssh root@45.132.241.60 "rm -f /var/www/rpg-engine/rpg.db && systemctl restart rp
 ## Key Design Decisions
 
 ### Why graph templates instead of one graph with more conditional edges?
+
 As you add more story types (combat, mystery, survival), a single graph with conditional skips for everything becomes bloated and hard to reason about. Templates keep each story type's pipeline clean and explicit.
 
 ### Why NPC before narrator in the social graph?
+
 If narrator runs first and ends with numbered choices, then NPC dialogue appears after the choices — confusing for the player. Swapping the order means NPCs speak first, then the narrator wraps up with the scene and choices. The choices are always the last thing the player sees.
 
 ### Why string matching for milestones instead of LLM?
+
 LLM-based milestone judging was unreliable — it couldn't consistently determine if "I would love to spend the afternoon with you" achieved "Go on a date." String matching is instant, deterministic, and free (no LLM call). The narrator offers milestones as choices, and the player's selection contains the milestone text.
 
 ### Why does the rules node check milestone progress?
+
 Without this check, the LLM rules judge could trigger WIN based on romantic narrative even when the player hasn't completed all milestones. The rules node now blocks WIN until `milestone_progress >= len(milestones)`. LOSE can still fire at any time.
 
 ### Why does the guide NPC follow the player?
+
 Social stories are about dialogue. An empty room with no one to talk to breaks the flow. The guide ensures there's always at least one NPC present for conversation, even when the player moves to a location with no other characters.
 
 ### Why tension stages instead of the mood_node for social games?
+
 The standard mood_node uses the LLM to judge UP/DOWN/SAME every turn — reactive to individual messages. The social graph uses tension stages tied to milestone pacing — NPCs get restless when the player stalls, and reset when a milestone is hit. This creates pressure to progress rather than just react to tone. Tension stages also give the story author explicit control over the emotional arc at each milestone.
 
 ### Why condense memory instead of feeding raw history?
+
 As games get longer, raw history grows and the LLM mirrors the verbosity — responses get longer each turn. The condense node maintains a rolling summary (under 100 words) of key facts, relationships, and events. The narrator and NPCs see: summary + last 2 raw turns. This keeps prompt size bounded and responses consistent length regardless of how many turns the game has been going.
 
 ### Why does the rules node still use raw history?
+
 The rules node judges win/lose conditions, which requires specific detail — exact dialogue, precise actions. A compressed summary might lose the nuance needed for accurate judging. So rules reads the last 6 raw history entries while narrator/NPCs use the condensed summary.

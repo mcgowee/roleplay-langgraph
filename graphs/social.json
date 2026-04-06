@@ -1,0 +1,26 @@
+{
+  "name": "social",
+  "description": "Dialogue-focused with milestone progression, tension tracking, and guide NPC",
+  "nodes": ["movement", "guide_arrival", "milestone", "tension", "npc", "narrator", "condense", "memory", "rules"],
+  "entry_point": {
+    "router": "route_social_entry",
+    "mapping": { "movement": "movement", "guide_arrival": "guide_arrival" }
+  },
+  "edges": [
+    { "from": "movement", "to": "guide_arrival" },
+    { "from": "guide_arrival", "to": "milestone" },
+    { "from": "milestone", "to": "tension" },
+    { "from": "tension", "to": "npc" },
+    { "from": "npc", "to": "narrator" },
+    { "from": "narrator", "to": "condense" },
+    { "from": "condense", "to": "memory" },
+    { "from": "rules", "to": "__end__" }
+  ],
+  "conditional_edges": [
+    {
+      "from": "memory",
+      "router": "route_after_memory",
+      "mapping": { "__end__": "__end__", "rules": "rules" }
+    }
+  ]
+}

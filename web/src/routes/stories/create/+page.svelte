@@ -1,6 +1,13 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import { goto } from "$app/navigation";
   import FieldAiAssist from "$lib/components/FieldAiAssist.svelte";
+
+  type GraphMeta = {
+    name: string;
+    description: string;
+    node_count: number;
+  };
 
   const JSON_PLACEHOLDER = `{
   "title": "My Story",
@@ -34,6 +41,7 @@
   let description = $state("");
   let genre = $state("");
   let graphType = $state("standard");
+  let graphTypes = $state<GraphMeta[]>([]);
   let guideName = $state("");
   let milestonesText = $state("");
   let gameJson = $state("");
@@ -61,6 +69,8 @@
   let generating = $state(false);
   let genError = $state<string | null>(null);
   let aiGeneratedStory = $state<Record<string, unknown> | null>(null);
+  let generateStoryPromptUsed = $state<string | null>(null);
+  let aiPromptOpen = $state(false);
 
   function moodDescriptions(): Record<string, string> {
     const moodDescs: Record<string, string> = {};
@@ -73,6 +83,50 @@
   function normalizeKey(s: string): string {
     return s.trim().toLowerCase().replace(/\s+/g, "_");
   }
+
+  /** Social-graph NPC tension data from AI JSON; null if not present. */
+  function tensionStagesFromAi(ch: Record<string, unknown>): Array<{
+    progressing: string;
+    stalling: string;
+  }> | null {
+    const ts = ch["tension_stages"];
+    if (!Array.isArray(ts) || ts.length === 0) return null;
+    const out: Array<{ progressing: string; stalling: string }> = [];
+    for (const raw of ts) {
+      if (!raw || typeof raw !== "object") continue;
+      const s = raw as Record<string, unknown>;
+      out.push({
+        progressing: String(s.progressing ?? "").trim(),
+        stalling: String(s.stalling ?? "").trim(),
+      });
+    }
+    return out.length > 0 ? out : null;
+  }
+
+  function graphTypeLabel(name: string): string {
+    return name
+      .split(/[_\s]+/)
+      .filter(Boolean)
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+      .join(" ");
+  }
+
+  function resolveGraphType(gt: string): string {
+    const g = gt.trim().toLowerCase();
+    if (graphTypes.length > 0) {
+      if (graphTypes.some((x) => x.name === g)) return g;
+      if (g === "social" && graphTypes.some((x) => x.name === "social"))
+        return "social";
+      if (graphTypes.some((x) => x.name === "standard")) return "standard";
+      return graphTypes[0].name;
+    }
+    return g === "social" ? "social" : "standard";
+  }
+
+  const selectedGraphDescription = $derived.by(() => {
+    const meta = graphTypes.find((x) => x.name === graphType);
+    return (meta?.description ?? "").trim();
+  });
 
   function mergeAiExtrasIntoGameJson(out: Record<string, unknown>): void {
     const ai = aiGeneratedStory;
@@ -107,21 +161,36 @@
         const ch = charArr[j] as Record<string, unknown>;
         const ck = normalizeKey(String(ch.key ?? ""));
         if (!ck || characters[ck]) continue;
-        const moodN = Math.min(
-          10,
-          Math.max(1, Math.round(Number(ch.mood)) || 5)
-        );
         const locRef = normalizeKey(String(ch.location ?? ""));
-        characters[ck] = {
-          model: "default",
-          prompt:
-            String(ch.personality ?? "").trim() ||
-            `You are ${ck}. Stay in character. Reply in one or two short sentences.`,
-          mood: moodN,
-          mood_descriptions: moodDescriptions(),
-          location: locRef,
-          first_line: String(ch.first_line ?? "Hello.").trim() || "Hello.",
-        };
+        const tsList = graphType === "social" ? tensionStagesFromAi(ch) : null;
+        if (tsList && tsList.length > 0) {
+          const st = Number(ch.stall_threshold);
+          characters[ck] = {
+            model: "default",
+            prompt:
+              String(ch.personality ?? "").trim() ||
+              `You are ${ck}. Stay in character. Reply in one or two short sentences.`,
+            location: locRef,
+            first_line: String(ch.first_line ?? "Hello.").trim() || "Hello.",
+            stall_threshold: Number.isFinite(st) ? Math.max(0, Math.floor(st)) : 4,
+            tension_stages: tsList,
+          };
+        } else {
+          const moodN = Math.min(
+            10,
+            Math.max(1, Math.round(Number(ch.mood)) || 5)
+          );
+          characters[ck] = {
+            model: "default",
+            prompt:
+              String(ch.personality ?? "").trim() ||
+              `You are ${ck}. Stay in character. Reply in one or two short sentences.`,
+            mood: moodN,
+            mood_descriptions: moodDescriptions(),
+            location: locRef,
+            first_line: String(ch.first_line ?? "Hello.").trim() || "Hello.",
+          };
+        }
         if (locations[locRef]) {
           const L = locations[locRef];
           if (!L.characters.includes(ck)) L.characters.push(ck);
@@ -156,21 +225,46 @@
     const locationCharacters: string[] = [];
 
     if (charKey) {
-      const moodN = Math.min(
-        10,
-        Math.max(1, Math.round(Number(characterMood)) || 5)
-      );
+      const aiChs = aiGeneratedStory?.["characters"];
+      const ai0 =
+        Array.isArray(aiChs) && aiChs.length > 0
+          ? (aiChs[0] as Record<string, unknown>)
+          : null;
+      const aiKeyMatch =
+        graphType === "social" &&
+        ai0 &&
+        normalizeKey(String(ai0.key ?? "")) === charKey;
+      const tsPrimary =
+        aiKeyMatch && ai0 ? tensionStagesFromAi(ai0) : null;
 
-      characters[charKey] = {
-        model: "default",
-        prompt:
-          characterPrompt.trim() ||
-          `You are ${characterName.trim()}. Stay in character. Reply in one or two short sentences.`,
-        mood: moodN,
-        mood_descriptions: moodDescriptions(),
-        location: locationKey,
-        first_line: characterFirstLine.trim() || "Hello.",
-      };
+      if (tsPrimary && tsPrimary.length > 0 && ai0) {
+        const st = Number(ai0.stall_threshold);
+        characters[charKey] = {
+          model: "default",
+          prompt:
+            characterPrompt.trim() ||
+            `You are ${characterName.trim()}. Stay in character. Reply in one or two short sentences.`,
+          location: locationKey,
+          first_line: characterFirstLine.trim() || "Hello.",
+          stall_threshold: Number.isFinite(st) ? Math.max(0, Math.floor(st)) : 4,
+          tension_stages: tsPrimary,
+        };
+      } else {
+        const moodN = Math.min(
+          10,
+          Math.max(1, Math.round(Number(characterMood)) || 5)
+        );
+        characters[charKey] = {
+          model: "default",
+          prompt:
+            characterPrompt.trim() ||
+            `You are ${characterName.trim()}. Stay in character. Reply in one or two short sentences.`,
+          mood: moodN,
+          mood_descriptions: moodDescriptions(),
+          location: locationKey,
+          first_line: characterFirstLine.trim() || "Hello.",
+        };
+      }
       locationCharacters.push(charKey);
     }
 
@@ -226,7 +320,7 @@
     genre = GENRES.includes(g as (typeof GENRES)[number]) ? g : "";
     {
       const gt = String(story.graph_type ?? "standard").trim().toLowerCase();
-      graphType = gt === "social" ? "social" : "standard";
+      graphType = resolveGraphType(gt);
     }
     guideName = String(story.guide ?? "");
     milestonesText = Array.isArray(story.milestones)
@@ -276,25 +370,34 @@
     const c = aiConcept.trim();
     if (!c) return;
     generating = true;
+    generateStoryPromptUsed = null;
+    aiPromptOpen = false;
     try {
       const r = await fetch("/api/generate-story", {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ concept: c }),
+        body: JSON.stringify({ concept: c, graph_type: graphType }),
       });
-      const data = await r.json();
+      const data = (await r.json()) as {
+        story?: Record<string, unknown>;
+        prompt_used?: string;
+        error?: string;
+        detail?: string;
+      };
       if (!r.ok) {
-        const msg =
-          (data as { error?: string }).error ?? "Generation failed";
-        const detail = (data as { detail?: string }).detail;
+        const msg = data.error ?? "Generation failed";
+        const detail = data.detail;
         genError = detail ? `${msg} (${detail})` : msg;
         return;
       }
-      const story = (data as { story?: Record<string, unknown> }).story;
+      const story = data.story;
       if (!story || typeof story !== "object") {
         genError = "Invalid response from server.";
         return;
+      }
+      if (typeof data.prompt_used === "string" && data.prompt_used.length > 0) {
+        generateStoryPromptUsed = data.prompt_used;
       }
       applyAiStory(story);
     } catch {
@@ -308,7 +411,28 @@
     aiConcept = "";
     genError = null;
     aiGeneratedStory = null;
+    generateStoryPromptUsed = null;
+    aiPromptOpen = false;
   }
+
+  onMount(async () => {
+    try {
+      const r = await fetch("/api/graphs", { credentials: "include" });
+      if (!r.ok) return;
+      const data = await r.json();
+      graphTypes = Array.isArray(data) ? data : [];
+      if (
+        graphTypes.length > 0 &&
+        !graphTypes.some((x) => x.name === graphType)
+      ) {
+        graphType = graphTypes.some((x) => x.name === "standard")
+          ? "standard"
+          : graphTypes[0].name;
+      }
+    } catch {
+      /* optional catalog */
+    }
+  });
 
   function validateBuild(): boolean {
     buildError = null;
@@ -540,6 +664,12 @@
         {#if genError}
           <p class="gen-err-sm">{genError}</p>
         {/if}
+        {#if generateStoryPromptUsed}
+          <details class="ai-prompt-details" bind:open={aiPromptOpen}>
+            <summary class="ai-prompt-summary">View AI prompt</summary>
+            <pre class="ai-prompt-pre">{generateStoryPromptUsed}</pre>
+          </details>
+        {/if}
       </div>
 
       {#if buildError}
@@ -609,14 +739,26 @@
           <label class="form-field">
             Story Type
             <select bind:value={graphType}>
-              <option value="standard">Standard</option>
-              <option value="social">Social</option>
+              {#if graphTypes.length === 0}
+                <option value="standard">Standard</option>
+                <option value="social">Social</option>
+              {:else}
+                {#each graphTypes as gt (gt.name)}
+                  <option value={gt.name}>{graphTypeLabel(gt.name)}</option>
+                {/each}
+              {/if}
             </select>
-            <span class="field-hint"
-              ><strong>Standard</strong> = Exploration with items and NPC moods.
-              <strong>Social</strong> = Dialogue-focused with milestones and a guide
-              NPC.</span
-            >
+            <span class="field-hint">
+              {#if selectedGraphDescription}
+                {selectedGraphDescription}
+              {:else if graphTypes.length === 0}
+                <strong>Standard</strong> = Exploration with items and NPC moods.
+                <strong>Social</strong> = Dialogue-focused with milestones and a guide
+                NPC.
+              {:else}
+                Select a pipeline template for this story.
+              {/if}
+            </span>
           </label>
           {#if graphType === "social"}
             <label class="form-field">
@@ -1039,6 +1181,41 @@
     margin: 0.5rem 0 0;
     font-size: 0.85rem;
     color: #f28b82;
+  }
+  .ai-prompt-details {
+    margin: 0.65rem 0 0;
+  }
+  .ai-prompt-summary {
+    cursor: pointer;
+    font-size: 0.82rem;
+    color: #6f747a;
+    list-style: none;
+  }
+  .ai-prompt-summary::-webkit-details-marker {
+    display: none;
+  }
+  .ai-prompt-summary::before {
+    content: "▸ ";
+    display: inline-block;
+    transition: transform 0.15s ease;
+    color: #5f6368;
+  }
+  .ai-prompt-details[open] > .ai-prompt-summary::before {
+    transform: rotate(90deg);
+  }
+  .ai-prompt-pre {
+    margin: 0.4rem 0 0;
+    padding: 0.5rem 0.65rem;
+    max-height: 16rem;
+    overflow: auto;
+    font-size: 0.8rem;
+    line-height: 1.4;
+    color: #80868b;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid #2a2f38;
+    border-radius: 8px;
+    white-space: pre-wrap;
+    word-break: break-word;
   }
   .ai-extras-notice {
     margin: 0 0 1rem;

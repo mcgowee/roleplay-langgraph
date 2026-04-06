@@ -1,0 +1,33 @@
+{
+  "name": "standard",
+  "description": "Exploration with items, NPC moods, and win/lose conditions",
+  "nodes": ["movement", "inventory", "narrator", "mood", "npc", "condense", "memory", "rules"],
+  "entry_point": {
+    "router": "route_graph_entry",
+    "mapping": { "movement": "movement", "inventory": "inventory" }
+  },
+  "edges": [
+    { "from": "inventory", "to": "narrator" },
+    { "from": "mood", "to": "npc" },
+    { "from": "npc", "to": "condense" },
+    { "from": "condense", "to": "memory" },
+    { "from": "rules", "to": "__end__" }
+  ],
+  "conditional_edges": [
+    {
+      "from": "movement",
+      "router": "route_after_movement",
+      "mapping": { "inventory": "inventory", "narrator": "narrator" }
+    },
+    {
+      "from": "narrator",
+      "router": "route_after_narrator",
+      "mapping": { "mood": "mood", "memory": "condense" }
+    },
+    {
+      "from": "memory",
+      "router": "route_after_memory",
+      "mapping": { "__end__": "__end__", "rules": "rules" }
+    }
+  ]
+}

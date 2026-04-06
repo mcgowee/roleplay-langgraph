@@ -9,6 +9,7 @@
     { href: "/tools/validate", label: "Validate JSON" },
     { href: "/tools/feedback", label: "Feedback report" },
     { href: "/tools/story-draft", label: "AI Story Generator" },
+    { href: "/tools/graphs", label: "Graph Editor" },
   ];
 </script>
 

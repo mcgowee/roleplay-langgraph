@@ -23,5 +23,11 @@
         Takes 2-5 minutes.
       </p>
     </li>
+    <li>
+      <a href="/tools/graphs">Graph Editor</a>
+      <p class="helper-text">
+        View and edit graph templates for story types (standard, social, custom).
+      </p>
+    </li>
   </ul>
 </section>
