@@ -46,6 +46,9 @@
   let milestones = $state<string[]>([]);
   let milestoneProgress = $state(0);
   let currentMilestone = $state<string | null>(null);
+  let tensionMood = $state("progressing");
+  let tensionTurns = $state(0);
+  let npcTension = $state<Record<string, string>>({});
 
   let loadSlotInput = $state(0);
   let deleteSlotInput = $state(0);
@@ -64,6 +67,9 @@
     milestones: "Milestones",
     milestone_progress: "Milestone Progress",
     current_milestone: "Current Goal",
+    tension_mood: "Tension Mood",
+    tension_turns_since_milestone: "Turns Since Milestone",
+    npc_tension: "NPC Tension",
     graph_type: "Story Type",
     models: "AI Models",
     save_slots: "Save Slots",
@@ -71,6 +77,16 @@
 
   function friendlyStatusKey(k: string): string {
     return friendlyStatusLabels[k] ?? k.replace(/_/g, " ");
+  }
+
+  /** Display name for an NPC key (underscores → spaces, title case). */
+  function titleCaseNpcName(raw: string): string {
+    return raw
+      .replace(/_/g, " ")
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+      .join(" ");
   }
 
   /** Title-case graph_type for sidebar (e.g. social → Social). */
@@ -209,6 +225,9 @@
         milestones?: string[];
         milestone_progress?: number;
         current_milestone?: string | null;
+        tension_mood?: string;
+        tension_turns_since_milestone?: number;
+        npc_tension?: Record<string, string>;
         graph_type?: string;
       };
       if (typeof d.turns === "number") {
@@ -226,6 +245,15 @@
       if (d.current_milestone !== undefined) {
         currentMilestone = d.current_milestone;
       }
+      if (typeof d.tension_mood === "string") {
+        tensionMood = d.tension_mood;
+      }
+      if (typeof d.tension_turns_since_milestone === "number") {
+        tensionTurns = d.tension_turns_since_milestone;
+      }
+      if (d.npc_tension && typeof d.npc_tension === "object") {
+        npcTension = d.npc_tension;
+      }
       if (statusData) {
         const inv = Array.isArray(d.inventory) ? d.inventory : null;
         const next: Record<string, unknown> = {
@@ -236,6 +264,15 @@
           ...(inv ? { inventory: inv } : {}),
           ...(typeof d.graph_type === "string"
             ? { graph_type: d.graph_type }
+            : {}),
+          ...(typeof d.tension_mood === "string"
+            ? { tension_mood: d.tension_mood }
+            : {}),
+          ...(typeof d.tension_turns_since_milestone === "number"
+            ? { tension_turns_since_milestone: d.tension_turns_since_milestone }
+            : {}),
+          ...(d.npc_tension && typeof d.npc_tension === "object"
+            ? { npc_tension: d.npc_tension }
             : {}),
         };
         if (inv) {
@@ -299,6 +336,15 @@
       }
       if (sd?.current_milestone !== undefined) {
         currentMilestone = sd.current_milestone as string | null;
+      }
+      if (typeof sd?.tension_mood === "string") {
+        tensionMood = sd.tension_mood as string;
+      }
+      if (typeof sd?.tension_turns_since_milestone === "number") {
+        tensionTurns = sd.tension_turns_since_milestone as number;
+      }
+      if (sd?.npc_tension && typeof sd.npc_tension === "object") {
+        npcTension = sd.npc_tension as Record<string, string>;
       }
     } catch {
       actionError = "Status request failed";
@@ -528,6 +574,11 @@
         if (Array.isArray(d.milestones)) milestones = d.milestones as string[];
         if (typeof d.milestone_progress === "number") milestoneProgress = d.milestone_progress as number;
         if (d.current_milestone !== undefined) currentMilestone = d.current_milestone as string | null;
+        if (typeof d.tension_mood === "string") tensionMood = d.tension_mood as string;
+        if (typeof d.tension_turns_since_milestone === "number")
+          tensionTurns = d.tension_turns_since_milestone as number;
+        if (d.npc_tension && typeof d.npc_tension === "object")
+          npcTension = d.npc_tension as Record<string, string>;
         syncPlayUrl();
         ready = true;
       } catch {
@@ -636,6 +687,33 @@
                     </li>
                   {/each}
                 </ul>
+              </div>
+
+              <div class="sidebar-tension status-tab-tension">
+                <p class="milestones-label">Tension</p>
+                <p class="tension-mood-line">
+                  <span
+                    class="tension-state"
+                    class:tension-prog={tensionMood === "progressing"}
+                    class:tension-stall={tensionMood === "stalling"}
+                    >{tensionMood === "stalling" ? "Stalling" : "Progressing"}</span
+                  >
+                  <span class="tension-turns-note"
+                    > · {tensionTurns} turn{tensionTurns === 1 ? "" : "s"}</span
+                  >
+                </p>
+                {#each Object.entries(npcTension) as [npcKey, desc] (npcKey)}
+                  <div class="tension-npc-block">
+                    <p class="tension-npc-label">{titleCaseNpcName(npcKey)}</p>
+                    <p
+                      class="tension-npc-desc"
+                      class:tension-prog={tensionMood === "progressing"}
+                      class:tension-stall={tensionMood === "stalling"}
+                    >
+                      {desc}
+                    </p>
+                  </div>
+                {/each}
               </div>
             {/if}
 
@@ -955,6 +1033,69 @@
 
   .milestone-icon {
     margin-right: 0.35rem;
+  }
+
+  .sidebar-tension {
+    margin: 0.6rem 0 0;
+    padding: 0.5rem 0.6rem;
+    background: rgba(255, 255, 255, 0.04);
+    border-radius: 6px;
+  }
+
+  .status-tab-tension {
+    margin-top: 0;
+    margin-bottom: 0.75rem;
+  }
+
+  .tension-mood-line {
+    margin: 0 0 0.45rem;
+    font-size: 0.78rem;
+    line-height: 1.4;
+    color: #bdc1c6;
+  }
+
+  .tension-state {
+    font-weight: 600;
+  }
+
+  .tension-state.tension-prog {
+    color: #81c995;
+  }
+
+  .tension-state.tension-stall {
+    color: #f6b93b;
+  }
+
+  .tension-turns-note {
+    font-weight: 400;
+    color: #9aa0a6;
+  }
+
+  .tension-npc-block {
+    margin-top: 0.45rem;
+  }
+
+  .tension-npc-label {
+    margin: 0 0 0.15rem;
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #888;
+  }
+
+  .tension-npc-desc {
+    margin: 0;
+    font-size: 0.76rem;
+    line-height: 1.45;
+    color: #bdc1c6;
+  }
+
+  .tension-npc-desc.tension-prog {
+    color: #81c995;
+  }
+
+  .tension-npc-desc.tension-stall {
+    color: #f6b93b;
   }
 
   .sidebar-tabs {

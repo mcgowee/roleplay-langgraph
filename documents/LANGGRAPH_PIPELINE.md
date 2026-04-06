@@ -19,8 +19,8 @@ The engine supports multiple graph templates. Each template is a different LangG
 
 | Template | Graph Type | Nodes | Use Case |
 |----------|-----------|-------|----------|
-| Standard | `"standard"` | movement, inventory, narrator, mood, npc, memory, rules | Exploration + NPCs + items + win/lose |
-| Social | `"social"` | movement, guide_arrival, milestone, npc, narrator, memory, rules | Dialogue-focused with milestone progression |
+| Standard | `"standard"` | movement, inventory, narrator, mood, npc, condense, memory, rules | Exploration + NPCs + items + win/lose |
+| Social | `"social"` | movement, guide_arrival, milestone, tension, npc, narrator, condense, memory, rules | Dialogue-focused with milestone progression + tension tracking |
 
 ## State
 
@@ -44,6 +44,9 @@ paused               bool   — whether game is paused
 milestones           list   — ordered list of milestone strings from game JSON
 milestone_progress   int    — index of current milestone (0 = first)
 guide                str    — name of the guide NPC who follows the player
+tension_turns_since_milestone  int  — turns since last milestone was achieved
+tension_mood         str    — "progressing" or "stalling"
+memory_summary       str    — condensed story-so-far (updated by condense_node each turn)
 ```
 
 Additionally, `_graph_type` is stored as a private key (not in the TypedDict) to persist the graph selection through saves.
@@ -55,10 +58,11 @@ Additionally, `_graph_type` is stored as a private key (not in the TypedDict) to
 | Node | LLM Call? | What It Does |
 |------|-----------|-------------|
 | `movement_node` | Yes (classifier) | Asks LLM if the player is trying to move. Returns location key or STAY. Updates `state["location"]` if moving. |
-| `narrator_node` | Yes (creative) | Main storytelling. Sends location, inventory, NPCs, history, and player message to LLM. Returns scene narration as `state["response"]`. |
-| `npc_node` | Yes (creative, per NPC) | For each NPC in the room, generates in-character dialogue. Appends to `state["response"]` with mood indicator. |
+| `narrator_node` | Yes (creative) | Main storytelling. Sends location, inventory, NPCs, milestone context, mood context, memory summary + last 2 raw turns, and player message to LLM. Returns scene narration as `state["response"]`. |
+| `npc_node` | Yes (creative, per NPC) | For each NPC in the room, generates in-character dialogue. Uses tension stage descriptions when available, falls back to mood_descriptions. Guide NPC gets extra instruction to nudge toward milestones. Appends to `state["response"]` with mood indicator. |
+| `condense_node` | Yes (creative) | Maintains `memory_summary` — asks LLM to update a rolling summary (under 100 words) with key facts, relationship developments, and emotional shifts from the current turn. Keeps prompt sizes bounded over long games. |
 | `memory_node` | No | Combines player message + response into one string, appends to `state["history"]`, sets `turn_count`. |
-| `rules_node` | Yes (classifier) | Checks trigger words (string match) and win/lose conditions (LLM judges). If milestones exist, blocks WIN until all complete. |
+| `rules_node` | Yes (classifier) | Checks trigger words (string match) and win/lose conditions (LLM judges from last 6 raw history entries). If milestones exist, blocks WIN until all complete. |
 
 ### Nodes only in standard template
 
@@ -73,6 +77,7 @@ Additionally, `_graph_type` is stored as a private key (not in the TypedDict) to
 |------|-----------|-------------|
 | `guide_arrival_node` | No | If the guide NPC isn't in the current room, moves them here. Removes guide from old room, adds to current room. Sets hint for narrator. |
 | `milestone_node` | No | Checks if the player's message contains the current milestone (loose string match). Advances progress, blocks skip-ahead, or passes through. |
+| `tension_node` | No | Tracks turns since last milestone. If turns exceed the lowest `stall_threshold` among NPCs in the room, flips `tension_mood` from "progressing" to "stalling". Resets on milestone achievement. |
 
 ## Standard Graph
 
@@ -80,9 +85,9 @@ Additionally, `_graph_type` is stored as a private key (not in the TypedDict) to
 entry → route_graph_entry → movement or inventory
 movement → route_after_movement → inventory or narrator
 inventory → narrator
-narrator → route_after_narrator → mood or memory
-mood → npc
-npc → memory
+narrator → route_after_narrator → mood or condense (no NPCs path)
+mood → npc → condense
+condense → memory
 memory → route_after_memory → rules or END
 rules → END
 ```
@@ -90,8 +95,10 @@ rules → END
 Conditional edges skip nodes when unnecessary:
 - Skip movement if only 1 location
 - Skip inventory if no items in current room
-- Skip mood+npc if no NPCs in current room
+- Skip mood+npc if no NPCs in current room (goes narrator → condense → memory)
 - Skip rules if no win/lose conditions and no trigger words
+
+### Hand-drawn diagram (shows conditional logic)
 
 ```mermaid
 flowchart LR
@@ -104,13 +111,46 @@ flowchart LR
   INV --> NAR
   NAR --> NARR{NPCs in room?}
   NARR -->|yes| MOOD[mood]
-  NARR -->|no| MEM[memory]
+  NARR -->|no| COND[condense]
   MOOD --> NPC[npc]
-  NPC --> MEM
+  NPC --> COND
+  COND --> MEM[memory]
   MEM --> MEMR{has rules?}
   MEMR -->|yes| RULES[rules]
   MEMR -->|no| DONE([END])
   RULES --> DONE
+```
+
+### Auto-generated from LangGraph (actual compiled graph)
+
+```mermaid
+graph TD;
+	__start__([__start__]):::first
+	movement(movement)
+	inventory(inventory)
+	narrator(narrator)
+	mood(mood)
+	npc(npc)
+	condense(condense)
+	memory(memory)
+	rules(rules)
+	__end__([__end__]):::last
+	__start__ -.-> inventory;
+	__start__ -.-> movement;
+	condense --> memory;
+	inventory --> narrator;
+	memory -.-> __end__;
+	memory -.-> rules;
+	mood --> npc;
+	movement -.-> inventory;
+	movement -.-> narrator;
+	narrator -.-> condense;
+	narrator -.-> mood;
+	npc --> condense;
+	rules --> __end__;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc
 ```
 
 ## Social Graph
@@ -118,15 +158,14 @@ flowchart LR
 ```
 entry → route_social_entry → movement or guide_arrival
 movement → guide_arrival
-guide_arrival → milestone
-milestone → npc
-npc → narrator
-narrator → memory
+guide_arrival → milestone → tension → npc → narrator → condense → memory
 memory → route_after_memory → rules or END
 rules → END
 ```
 
-Note: NPC runs **before** narrator so the narrator's choices appear last in the output.
+Note: NPC runs **before** narrator so the narrator's choices appear last in the output. Tension node tracks stalling between milestones.
+
+### Hand-drawn diagram (shows conditional logic)
 
 ```mermaid
 flowchart LR
@@ -135,18 +174,54 @@ flowchart LR
   ENTRY -->|no| GA[guide_arrival]
   MOV --> GA
   GA --> MS[milestone]
-  MS --> NPC[npc]
+  MS --> TEN[tension]
+  TEN --> NPC[npc]
   NPC --> NAR[narrator]
-  NAR --> MEM[memory]
+  NAR --> COND[condense]
+  COND --> MEM[memory]
   MEM --> MEMR{has rules?}
   MEMR -->|yes| RULES[rules]
   MEMR -->|no| DONE([END])
   RULES --> DONE
 ```
 
+### Auto-generated from LangGraph (actual compiled graph)
+
+```mermaid
+graph TD;
+	__start__([__start__]):::first
+	movement(movement)
+	guide_arrival(guide_arrival)
+	milestone(milestone)
+	tension(tension)
+	narrator(narrator)
+	npc(npc)
+	condense(condense)
+	memory(memory)
+	rules(rules)
+	__end__([__end__]):::last
+	__start__ -.-> guide_arrival;
+	__start__ -.-> movement;
+	condense --> memory;
+	guide_arrival --> milestone;
+	memory -.-> __end__;
+	memory -.-> rules;
+	milestone --> tension;
+	movement --> guide_arrival;
+	narrator --> condense;
+	npc --> narrator;
+	tension --> npc;
+	rules --> __end__;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc
+```
+
 ## Game JSON Fields for Social Graph
 
 The social graph introduces these game JSON fields:
+
+### Top-level fields
 
 ```json
 {
@@ -164,6 +239,29 @@ The social graph introduces these game JSON fields:
 - `graph_type` — selects which graph template to use
 - `guide` — the NPC key that follows the player between locations
 - `milestones` — ordered list of goals the player must achieve in sequence
+
+### Character tension fields
+
+Each NPC can have tension tracking that shifts their mood based on milestone pacing:
+
+```json
+"sam": {
+  "stall_threshold": 4,
+  "tension_stages": [
+    {
+      "progressing": "Shy but curious; laughs a little too loudly at small jokes.",
+      "stalling": "Withdrawn and polite — worried they misread the situation."
+    },
+    {
+      "progressing": "More open; fidgets less, finds excuses to sit closer.",
+      "stalling": "Awkward and self-conscious — waiting for Alex to make a move."
+    }
+  ]
+}
+```
+
+- `stall_threshold` — turns without a milestone before mood flips to "stalling". Set to 0 or omit to disable tension for that NPC.
+- `tension_stages` — one entry per milestone, aligned by index. Each has `progressing` and `stalling` descriptions that override `mood_descriptions` in the NPC prompt when present.
 
 ## How to Create a New Graph Template
 
@@ -343,3 +441,12 @@ Without this check, the LLM rules judge could trigger WIN based on romantic narr
 
 ### Why does the guide NPC follow the player?
 Social stories are about dialogue. An empty room with no one to talk to breaks the flow. The guide ensures there's always at least one NPC present for conversation, even when the player moves to a location with no other characters.
+
+### Why tension stages instead of the mood_node for social games?
+The standard mood_node uses the LLM to judge UP/DOWN/SAME every turn — reactive to individual messages. The social graph uses tension stages tied to milestone pacing — NPCs get restless when the player stalls, and reset when a milestone is hit. This creates pressure to progress rather than just react to tone. Tension stages also give the story author explicit control over the emotional arc at each milestone.
+
+### Why condense memory instead of feeding raw history?
+As games get longer, raw history grows and the LLM mirrors the verbosity — responses get longer each turn. The condense node maintains a rolling summary (under 100 words) of key facts, relationships, and events. The narrator and NPCs see: summary + last 2 raw turns. This keeps prompt size bounded and responses consistent length regardless of how many turns the game has been going.
+
+### Why does the rules node still use raw history?
+The rules node judges win/lose conditions, which requires specific detail — exact dialogue, precise actions. A compressed summary might lose the nuance needed for accurate judging. So rules reads the last 6 raw history entries while narrator/NPCs use the condensed summary.

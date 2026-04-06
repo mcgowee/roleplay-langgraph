@@ -224,6 +224,9 @@ def _format_mood_context_for_room(state: dict) -> str:
         mood = max(1, min(10, mood))
         mood_descriptions = npc.get("mood_descriptions") or {}
         mood_desc = mood_descriptions.get(str(mood), f"about mood level {mood} on a 1–10 scale.")
+        tension_desc = _get_tension_description(state, name)
+        if tension_desc:
+            mood_desc = tension_desc
         lines.append(f"- {name}: {mood_desc} (internal: {mood}/10)")
     if not lines:
         return ""
@@ -232,6 +235,57 @@ def _format_mood_context_for_room(state: dict) -> str:
         "(do not quote these ratings to the player):\n"
         + "\n".join(lines)
     )
+
+
+def _memory_context_block(state: dict) -> str:
+    """Condensed story summary plus last two raw turns for narrator/NPC/mood prompts."""
+    summary = state.get("memory_summary") or ""
+    hist = state.get("history") or []
+    recent = hist[-2:] if len(hist) >= 2 else hist
+    summary_block = f"Story so far: {summary}\n\n" if summary else ""
+    return summary_block + "\n".join(recent)
+
+
+def _get_tension_description(state: dict, npc_name: str) -> str:
+    """Return the NPC's tension prose for the current milestone stage and tension_mood."""
+    characters = state.get("characters") or {}
+    npc = characters.get(npc_name)
+    if not isinstance(npc, dict):
+        return ""
+    stages = npc.get("tension_stages")
+    if not isinstance(stages, list) or len(stages) == 0:
+        return ""
+
+    progress = int(state.get("milestone_progress", 0) or 0)
+    idx = progress
+    if idx >= len(stages):
+        idx = len(stages) - 1
+
+    stage = stages[idx]
+    if not isinstance(stage, dict):
+        return ""
+
+    tm = state.get("tension_mood")
+    if tm not in ("progressing", "stalling"):
+        return ""
+    desc = stage.get(tm)
+    if desc is None:
+        return ""
+    return str(desc).strip()
+
+
+def _npc_tension_map(state: dict) -> dict[str, str]:
+    """Per-NPC tension line for API clients; only NPCs with non-empty tension descriptions."""
+    loc = state.get("location") or ""
+    room = (state.get("locations") or {}).get(loc) or {}
+    if not isinstance(room, dict):
+        return {}
+    out: dict[str, str] = {}
+    for npc_name in room.get("characters") or []:
+        desc = _get_tension_description(state, npc_name)
+        if desc:
+            out[npc_name] = desc
+    return out
 
 
 # --- State ---
@@ -253,6 +307,9 @@ class State(TypedDict):
     milestones: list
     milestone_progress: int
     guide: str
+    tension_turns_since_milestone: int
+    tension_mood: str
+    memory_summary: str
     # Set for one invoke in /chat; stripped before save. Snapshot of world before movement/inventory.
     narrative_turn_snapshot: NotRequired[dict]
 
@@ -336,6 +393,8 @@ def patch_state_engine_fields(state: dict) -> None:
     # Legacy saves incremented turn_count once per graph node; reconcile to history length.
     hist = state.get("history") or []
     state["turn_count"] = len(hist)
+    if "memory_summary" not in state:
+        state["memory_summary"] = ""
 
 
 def load_game(game_name: str) -> State:
@@ -363,6 +422,9 @@ def load_game(game_name: str) -> State:
         "milestones": game.get("milestones", []),
         "milestone_progress": 0,
         "guide": game.get("guide", ""),
+        "tension_turns_since_milestone": 0,
+        "tension_mood": "progressing",
+        "memory_summary": "",
         "_graph_type": game.get("graph_type", "standard"),
     }
 
@@ -389,6 +451,9 @@ def _build_state_from_json(game_data: dict) -> State:
         "milestones": game_data.get("milestones", []),
         "milestone_progress": 0,
         "guide": game_data.get("guide", ""),
+        "tension_turns_since_milestone": 0,
+        "tension_mood": "progressing",
+        "memory_summary": "",
         "_graph_type": game_data.get("graph_type", "standard"),
     }
 
@@ -495,7 +560,7 @@ Is the player trying to pick up or take an item? If yes, reply with ONLY the exa
 def narrator_node(state: State) -> State:
     location = state["locations"][state["location"]]
     player = state["player"]
-    history_text = "\n".join(state["history"][-6:])
+    history_text = _memory_context_block(state)
     model = state["narrator"].get("model", DEFAULT_MODEL)
     try:
         llm = get_llm(model)
@@ -533,7 +598,7 @@ Current location: {state["location"]} — {location.get("description", "")}
 Items here: {", ".join(location.get("items") or []) or "none"}
 Player inventory: {", ".join(state["inventory"]) or "empty"}
 Characters here: {", ".join(location.get("characters") or []) or "none"}
-{milestone_block}{mood_block}{arrival_hint}{engine_block}Recent history:
+{milestone_block}{mood_block}{arrival_hint}{engine_block}Context:
 {history_text}
 
 Player just said: {state["message"]}
@@ -551,6 +616,63 @@ Narrate what happens next:"""
                 f"Location: {location.get('description', '')}"
             ),
         }
+
+
+def condense_node(state: State) -> State:
+    """Merge recent exchanges into memory_summary; one LLM call (narrator model)."""
+    history = state.get("history") or []
+    if not history:
+        return {}
+
+    memory_summary = (state.get("memory_summary") or "").strip()
+    summary_placeholder = (
+        memory_summary
+        if memory_summary
+        else "No summary yet — this is the beginning of the story."
+    )
+
+    recent_raw = history[-3:]
+    recent_block = "\n\n".join(recent_raw)
+    current_turn = f"Player: {state['message']}\n{state['response']}"
+
+    model = state["narrator"].get("model", DEFAULT_MODEL)
+    try:
+        llm = get_llm(model)
+    except Exception as e:
+        logger.error(f"Condense node: could not get LLM: {e}")
+        return {}
+
+    prompt = f"""You are a story memory manager. Your job is to maintain a concise summary of everything important that has happened in this story.
+
+Current summary:
+{summary_placeholder}
+
+Recent raw turns (last 3 completed exchanges):
+{recent_block}
+
+New events to incorporate:
+{current_turn}
+
+Update the summary to include any important new information from the new events. Rules:
+- Keep the summary under 100 words
+- Focus on: key facts, relationship developments, promises made, things characters revealed, emotional shifts, milestone moments
+- Drop: scenery descriptions, small talk, redundant details
+- Write in past tense, third person
+- If the summary is getting long, compress older details to make room for new ones
+
+Updated summary:
+
+"""
+
+    try:
+        raw = llm.invoke(prompt)
+        text = (raw or "").strip() if isinstance(raw, str) else str(raw).strip()
+        if not text:
+            return {}
+        return {"memory_summary": text}
+    except Exception as e:
+        logger.error(f"Condense node error: {e}")
+        return {}
 
 
 def mood_node(state: State) -> State:
@@ -577,12 +699,13 @@ def mood_node(state: State) -> State:
             logger.error(f"Failed to get LLM for {npc_name}: {e}")
             return npc_name, npc
 
+        context_text = _memory_context_block(state)
         prompt = f"""You are evaluating how a character's mood should change after a conversation exchange.
 
 Character: {npc_name} (current mood: {current_mood}/10)
 Player action: {state["message"]}
-Recent history:
-{"\\n".join(state["history"][-4:])}
+Context:
+{context_text}
 
 Based on the player's action, should {npc_name}'s mood go up, down, or stay the same?
 Reply with ONLY one word: UP, DOWN, or SAME."""
@@ -622,7 +745,7 @@ def npc_node(state: State) -> State:
     if not npcs_here:
         return {}
 
-    history_text = "\n".join(state["history"][-6:])
+    history_text = _memory_context_block(state)
     full_response = state["response"]
     # Use narrator beat if available (standard graph), fall back to last history entry (social graph)
     narrator_beat = (state.get("response") or "").strip()
@@ -637,6 +760,9 @@ def npc_node(state: State) -> State:
         mood = npc.get("mood", 5)
         mood_descriptions = npc.get("mood_descriptions", {})
         mood_desc = mood_descriptions.get(str(mood), f"Mood level {mood}/10.")
+        tension_desc = _get_tension_description(state, npc_name)
+        if tension_desc:
+            mood_desc = tension_desc
         model = npc.get("model", DEFAULT_MODEL)
         try:
             llm = get_llm(model)
@@ -664,7 +790,7 @@ Current mood: {mood_desc}
 What the narrator just established in this scene (stay consistent; react naturally):
 {narrator_beat}
 
-Recent history:
+Context:
 {history_text}
 
 {player.get("name", "Adventurer")} just said: {state["message"]}
@@ -763,6 +889,54 @@ def guide_arrival_node(state: State) -> State:
     return {
         "locations": updated_locations,
         "response": f"[{guide_name.title()} arrives]",
+    }
+
+
+def tension_node(state: State) -> State:
+    """Update stall tension from turns since last milestone. No LLM — pure engine logic."""
+    milestones = state.get("milestones") or []
+    if not milestones:
+        return {}
+
+    response = state.get("response") or ""
+    if "[Milestone achieved" in response:
+        return {
+            "tension_turns_since_milestone": 0,
+            "tension_mood": "progressing",
+        }
+
+    prev = int(state.get("tension_turns_since_milestone", 0) or 0)
+    new_count = prev + 1
+
+    room = (state.get("locations") or {}).get(state.get("location") or "", {}) or {}
+    names = room.get("characters") or []
+    characters = state.get("characters") or {}
+
+    thresholds: list[int] = []
+    for name in names:
+        npc = characters.get(name)
+        if not isinstance(npc, dict):
+            continue
+        raw = npc.get("stall_threshold")
+        if raw is None:
+            continue
+        try:
+            st = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if st <= 0:
+            continue
+        thresholds.append(st)
+
+    if thresholds:
+        lowest = min(thresholds)
+        new_mood = "stalling" if new_count >= lowest else "progressing"
+    else:
+        new_mood = "progressing"
+
+    return {
+        "tension_turns_since_milestone": new_count,
+        "tension_mood": new_mood,
     }
 
 
@@ -885,13 +1059,14 @@ def route_social_entry(state: State) -> str:
 
 # --- Graph builders ---
 def build_standard_graph():
-    """Build the standard 7-node graph: movement → inventory → narrator → mood → npc → memory → rules."""
+    """Build the standard graph: movement → inventory → narrator → mood → npc → condense → memory → rules."""
     g = StateGraph(State)
     g.add_node("movement", movement_node)
     g.add_node("inventory", inventory_node)
     g.add_node("narrator", narrator_node)
     g.add_node("mood", mood_node)
     g.add_node("npc", npc_node)
+    g.add_node("condense", condense_node)
     g.add_node("memory", memory_node)
     g.add_node("rules", rules_node)
 
@@ -908,10 +1083,11 @@ def build_standard_graph():
     g.add_conditional_edges(
         "narrator",
         route_after_narrator,
-        {"mood": "mood", "memory": "memory"},
+        {"mood": "mood", "memory": "condense"},
     )
     g.add_edge("mood", "npc")
-    g.add_edge("npc", "memory")
+    g.add_edge("npc", "condense")
+    g.add_edge("condense", "memory")
     g.add_conditional_edges(
         "memory",
         route_after_memory,
@@ -923,15 +1099,17 @@ def build_standard_graph():
 
 
 def build_social_graph():
-    """Build the social graph: movement → guide_arrival → milestone → npc → narrator → memory → rules."""
+    """Build the social graph: movement → guide_arrival → milestone → tension → npc → narrator → condense → memory → rules."""
     g = StateGraph(State)
 
     # Nodes
     g.add_node("movement", movement_node)
     g.add_node("guide_arrival", guide_arrival_node)
     g.add_node("milestone", milestone_node)
+    g.add_node("tension", tension_node)
     g.add_node("narrator", narrator_node)
     g.add_node("npc", npc_node)
+    g.add_node("condense", condense_node)
     g.add_node("memory", memory_node)
     g.add_node("rules", rules_node)
 
@@ -941,12 +1119,14 @@ def build_social_graph():
         {"movement": "movement", "guide_arrival": "guide_arrival"},
     )
 
-    # movement → guide_arrival → milestone → npc → narrator → memory
+    # movement → guide_arrival → milestone → tension → npc → narrator → condense → memory
     g.add_edge("movement", "guide_arrival")
     g.add_edge("guide_arrival", "milestone")
-    g.add_edge("milestone", "npc")
+    g.add_edge("milestone", "tension")
+    g.add_edge("tension", "npc")
     g.add_edge("npc", "narrator")
-    g.add_edge("narrator", "memory")
+    g.add_edge("narrator", "condense")
+    g.add_edge("condense", "memory")
 
     # After memory: check rules if they exist, otherwise END
     g.add_conditional_edges(
@@ -2031,6 +2211,12 @@ def chat():
                     "milestones": milestones,
                     "milestone_progress": m_progress,
                     "current_milestone": milestones[m_progress] if m_progress < len(milestones) else None,
+                    "tension_mood": result.get("tension_mood", "progressing"),
+                    "tension_turns_since_milestone": result.get(
+                        "tension_turns_since_milestone", 0
+                    ),
+                    "npc_tension": _npc_tension_map(result),
+                    "memory_summary": result.get("memory_summary", ""),
                     "graph_type": result.get("_graph_type", "standard"),
                 }
             )
@@ -2081,6 +2267,10 @@ def status():
         "milestones": milestones,
         "milestone_progress": m_progress,
         "current_milestone": milestones[m_progress] if m_progress < len(milestones) else None,
+        "tension_mood": state.get("tension_mood", "progressing"),
+        "tension_turns_since_milestone": state.get("tension_turns_since_milestone", 0),
+        "npc_tension": _npc_tension_map(state),
+        "memory_summary": state.get("memory_summary", ""),
         "models": {
             "narrator": state["narrator"].get("model", DEFAULT_MODEL),
             "characters": {
