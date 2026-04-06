@@ -187,6 +187,53 @@ def _build_narrative_engine_brief(state: dict) -> str:
     )
 
 
+def _format_milestone_context(state: dict) -> str:
+    """Current milestone goal for LLM prompts (social graph and any game with milestones)."""
+    milestones = state.get("milestones") or []
+    if not milestones:
+        return ""
+    progress = int(state.get("milestone_progress", 0) or 0)
+    total = len(milestones)
+    if progress >= total:
+        return (
+            "Story milestones: all completed. The player has finished the scripted sequence."
+        )
+    current = milestones[progress]
+    done = progress
+    return (
+        f"Story milestones: {done} of {total} completed so far. "
+        f"The player's current goal is: {current}. "
+        "When it fits the scene, steer naturally toward this goal without forcing it."
+    )
+
+
+def _format_mood_context_for_room(state: dict) -> str:
+    """Summarize NPC moods in the current room for the narrator (no raw numbers in player-facing prose)."""
+    loc_key = state.get("location") or ""
+    room = (state.get("locations") or {}).get(loc_key) or {}
+    if not isinstance(room, dict):
+        return ""
+    names = room.get("characters") or []
+    characters = state.get("characters") or {}
+    lines: list[str] = []
+    for name in names:
+        npc = characters.get(name)
+        if not isinstance(npc, dict):
+            continue
+        mood = int(npc.get("mood", 5) or 5)
+        mood = max(1, min(10, mood))
+        mood_descriptions = npc.get("mood_descriptions") or {}
+        mood_desc = mood_descriptions.get(str(mood), f"about mood level {mood} on a 1–10 scale.")
+        lines.append(f"- {name}: {mood_desc} (internal: {mood}/10)")
+    if not lines:
+        return ""
+    return (
+        "Emotional temperature of people here — reflect this in atmosphere, tension, and behavior "
+        "(do not quote these ratings to the player):\n"
+        + "\n".join(lines)
+    )
+
+
 # --- State ---
 class State(TypedDict):
     message: str
@@ -471,6 +518,12 @@ def narrator_node(state: State) -> State:
     engine_brief = _build_narrative_engine_brief(state)
     engine_block = f"{engine_brief}\n\n" if engine_brief else ""
 
+    milestone_ctx = _format_milestone_context(state)
+    milestone_block = f"{milestone_ctx}\n\n" if milestone_ctx else ""
+
+    mood_ctx = _format_mood_context_for_room(state)
+    mood_block = f"{mood_ctx}\n\n" if mood_ctx else ""
+
     narrator_prompt = (state["narrator"].get("prompt") or "").strip() or DEFAULT_NARRATOR_PROMPT
     prompt = f"""{narrator_prompt}
 
@@ -480,7 +533,7 @@ Current location: {state["location"]} — {location.get("description", "")}
 Items here: {", ".join(location.get("items") or []) or "none"}
 Player inventory: {", ".join(state["inventory"]) or "empty"}
 Characters here: {", ".join(location.get("characters") or []) or "none"}
-{arrival_hint}{engine_block}Recent history:
+{milestone_block}{mood_block}{arrival_hint}{engine_block}Recent history:
 {history_text}
 
 Player just said: {state["message"]}
@@ -595,9 +648,17 @@ def npc_node(state: State) -> State:
         npc_prompt = (npc.get("prompt") or "").strip() or (
             f"You are {npc_name}. Stay in character."
         )
+        milestone_ctx = _format_milestone_context(state)
+        milestone_block = f"{milestone_ctx}\n\n" if milestone_ctx else ""
+        guide_block = ""
+        if (state.get("guide") or "") == npc_name and (state.get("milestones") or []):
+            guide_block = (
+                "You are this story's guide. If the conversation stalls or drifts, gently nudge "
+                "toward the current milestone above — stay in character.\n\n"
+            )
         prompt = f"""{npc_prompt}
 
-You are speaking to {player.get("name", "Adventurer")}. {player.get("background", "")}.
+{milestone_block}{guide_block}You are speaking to {player.get("name", "Adventurer")}. {player.get("background", "")}.
 Current mood: {mood_desc}
 
 What the narrator just established in this scene (stay consistent; react naturally):
